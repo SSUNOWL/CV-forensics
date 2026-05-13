@@ -1,0 +1,162 @@
+{
+  "project_title": "A Social-Media-Robust Lightweight Multi-Head Image Forensics System using Community Forensics-Small and SID-Set",
+  "final_goal": "Build a lightweight multi-head image forensics prototype that classifies images as real/synthetic/tampered, localizes tampered regions, identifies coarse generator-family provenance, and generates template-based evidence explanations — all runnable on a single RTX 4090.",
+  "target_outputs": {
+    "class": {
+      "description": "3-way classification label",
+      "values": ["real", "synthetic", "tampered"]
+    },
+    "mask": {
+      "description": "Tampered region localization mask (conditional on tampered_score >= tau)"
+    },
+    "family": {
+      "description": "Coarse generator-family provenance label",
+      "values": ["LatDiff", "PixDiff", "GAN", "Other", "Real-or-N/A"]
+    },
+    "reason": {
+      "description": "Template-based evidence explanation combining class, family, and mask information"
+    }
+  },
+  "datasets": {
+    "Community Forensics-Small": {
+      "alias": "CF-Small",
+      "primary_role": "Shared visual backbone pre-training and generator-family provenance head training",
+      "use_cases": [
+        "binary real/fake detector reproduction",
+        "shared backbone training with generator diversity",
+        "unseen generator generalization evaluation",
+        "coarse provenance label construction from architecture metadata"
+      ],
+      "key_metadata": ["architecture", "model_name", "subset"]
+    },
+    "SID-Set": {
+      "alias": "SID-Set",
+      "primary_role": "3-way classification and tampered mask localization fine-tuning",
+      "use_cases": [
+        "real/synthetic/tampered 3-way classification",
+        "tampered region localization",
+        "mask supervision"
+      ],
+      "size_note": "train 210K + validation 30K (240K rows considered for initial implementation)"
+    }
+  },
+  "architecture": {
+    "type": "lightweight multi-head",
+    "shared_backbone": {
+      "candidates": ["ConvNeXt-S", "CLIP-ViT-S"],
+      "role": "Shared visual feature extraction for all heads"
+    },
+    "heads": [
+      {
+        "name": "3-way Classification Head",
+        "outputs": ["real", "synthetic", "tampered"]
+      },
+      {
+        "name": "Generator-Family Provenance Head",
+        "outputs": ["LatDiff", "PixDiff", "GAN", "Other", "Real-or-N/A"]
+      },
+      {
+        "name": "Conditional Localization Head",
+        "description": "Activated only when tampered_score >= tau; predicts tampered region mask"
+      },
+      {
+        "name": "Evidence Aggregation Module",
+        "description": "Combines class/family/mask scores to produce template-based explanation"
+      }
+    ]
+  },
+  "implementation_stages": [
+    {
+      "stage": 1,
+      "name": "Community Forensics-Small Binary Backbone",
+      "goal": "Reproduce binary real/fake detector; train shared backbone with generator diversity using generator-holdout validation"
+    },
+    {
+      "stage": 2,
+      "name": "Generator-Family Provenance Head",
+      "goal": "Add coarse provenance head on top of Stage 1 backbone using architecture metadata from CF-Small"
+    },
+    {
+      "stage": 3,
+      "name": "SID-Set Multi-Head Fine-Tuning",
+      "goal": "Fine-tune on SID-Set for 3-way classification and tampered mask localization; handle missing family labels via freeze/mask-out/mixed-batch"
+    },
+    {
+      "stage": 4,
+      "name": "Social-Media Robustness and Evidence Template",
+      "goal": "Add screenshot/text-overlay/sticker-overlay/recompression perturbations; measure robustness drop; output template-based explanation"
+    }
+  ],
+  "evaluation_metrics": [
+    {
+      "name": "3-way Classification Accuracy",
+      "purpose": "Overall accuracy for real/synthetic/tampered"
+    },
+    {
+      "name": "Macro-F1",
+      "purpose": "Class-imbalance-aware average 3-way performance"
+    },
+    {
+      "name": "Tampered Mask IoU",
+      "purpose": "Overlap between predicted mask and ground-truth mask"
+    },
+    {
+      "name": "Generator-Family Accuracy",
+      "purpose": "Coarse provenance label accuracy"
+    },
+    {
+      "name": "Perturbation Robustness Drop",
+      "purpose": "Performance degradation after social-media perturbations (Delta F1 / Delta IoU)"
+    },
+    {
+      "name": "Latency",
+      "purpose": "Inference time in ms/image on RTX 4090"
+    },
+    {
+      "name": "FPS",
+      "purpose": "Inference FPS at batch size 1 on RTX 4090"
+    },
+    {
+      "name": "Localization Activation Recall",
+      "purpose": "Fraction of true tampered images where localization head was activated"
+    }
+  ],
+  "first_risks": [
+    {
+      "id": "R1",
+      "name": "Data Leakage",
+      "description": "Same generator appearing in both train and validation sets; must use generator-holdout validation"
+    },
+    {
+      "id": "R2",
+      "name": "Missing Family Labels in SID-Set",
+      "description": "SID-Set lacks family labels; apply freeze/mask-out/mixed-batch strategy for provenance head"
+    },
+    {
+      "id": "R3",
+      "name": "Conditional Localization False Negatives",
+      "description": "tau too high causes missed tampered images; set tau based on tampered recall"
+    },
+    {
+      "id": "R4",
+      "name": "Perturbation Robustness",
+      "description": "Social-media transformations may severely degrade performance; track Delta F1 and Delta IoU"
+    },
+    {
+      "id": "R5",
+      "name": "Reproducibility",
+      "description": "Must config-ize seed, dataset paths, output paths, and perturbation switches"
+    }
+  ],
+  "guardrails": [
+    "No dataset download without approval",
+    "No model training without approval",
+    "No package installation without approval",
+    "No access to .env, secrets, data, datasets, checkpoints, or outputs directories",
+    "No git push",
+    "No large file creation",
+    "No unrelated file modification",
+    "No external network access from shell commands",
+    "All agent tasks must be small and reversible"
+  ]
+}
