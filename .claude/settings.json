@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "defaultMode": "default",
+    "disableBypassPermissionsMode": "disable",
+    "allow": [
+      "Read(./**)",
+      "Edit(./docs/**)",
+      "Edit(./configs/**)",
+      "Edit(./scripts/**)",
+      "Edit(./tests/**)",
+      "Edit(./tasks/**)",
+      "Edit(./src/**)",
+      "Bash(git status *)",
+      "Bash(git diff *)",
+      "Bash(git diff --stat *)",
+      "Bash(git ls-files *)",
+      "Bash(python3 scripts/agent/validate_project_contract.py *)",
+      "Bash(python3 -m pytest *)",
+      "Bash(pytest *)"
+    ],
+    "ask": [
+      "Bash(python3 -m src.train *)",
+      "Bash(python3 -m src.evaluate *)",
+      "Bash(pip install *)",
+      "Bash(python3 -m pip install *)",
+      "Bash(conda install *)",
+      "Bash(git commit *)",
+      "Bash(git clean *)"
+    ],
+    "deny": [
+      "Read(~/.ssh/**)",
+      "Read(~/.codex/**)",
+      "Read(~/.claude/**)",
+      "Read(~/.config/gh/**)",
+      "Read(~/.git-credentials)",
+      "Read(~/.netrc)",
+      "Read(~/.npmrc)",
+      "Read(~/.pypirc)",
+      "Read(~/.cache/huggingface/**)",
+      "Read(~/.huggingface/**)",
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(./secrets/**)",
+      "Read(./data/**)",
+      "Read(./datasets/**)",
+      "Read(./outputs/**)",
+      "Read(./checkpoints/**)",
+      "Edit(~/.ssh/**)",
+      "Edit(~/.codex/**)",
+      "Edit(~/.claude/**)",
+      "Edit(~/.config/gh/**)",
+      "Edit(~/.git-credentials)",
+      "Edit(~/.netrc)",
+      "Edit(~/.npmrc)",
+      "Edit(./.env)",
+      "Edit(./.env.*)",
+      "Edit(./secrets/**)",
+      "Edit(./data/**)",
+      "Edit(./datasets/**)",
+      "Edit(./outputs/**)",
+      "Edit(./checkpoints/**)",
+      "Edit(./.git/**)",
+      "Bash(git push *)",
+      "Bash(rm -rf *)",
+      "Bash(curl *)",
+      "Bash(wget *)",
+      "Bash(env *)",
+      "Bash(printenv *)",
+      "Bash(set *)",
+      "WebFetch"
+    ]
+  },
+  "sandbox": {
+    "enabled": true,
+    "failIfUnavailable": true,
+    "autoAllowBashIfSandboxed": false,
+    "allowUnsandboxedCommands": false,
+    "filesystem": {
+      "denyRead": [
+        "~/"
+      ],
+      "allowRead": [
+        "."
+      ],
+      "allowWrite": [
+        "./docs",
+        "./configs",
+        "./scripts",
+        "./tests",
+        "./tasks",
+        "./src"
+      ],
+      "denyWrite": [
+        "~/.ssh",
+        "~/.codex",
+        "~/.claude",
+        "~/.config/gh",
+        "./.git",
+        "./.env",
+        "./.env.*",
+        "./secrets",
+        "./data",
+        "./datasets",
+        "./outputs",
+        "./checkpoints"
+      ]
+    },
+    "network": {
+      "allowedDomains": []
+    }
+  }
+}

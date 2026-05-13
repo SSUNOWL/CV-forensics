@@ -1,0 +1,41 @@
+approval_policy = "on-request"
+sandbox_mode = "workspace-write"
+web_search = "disabled"
+cli_auth_credentials_store = "file"
+
+check_for_update_on_startup = false
+[sandbox_workspace_write]
+network_access = false
+exclude_slash_tmp = true
+exclude_tmpdir_env_var = true
+
+[shell_environment_policy]
+inherit = "core"
+ignore_default_excludes = false
+exclude = [
+  "*KEY*",
+  "*TOKEN*",
+  "*SECRET*",
+  "*PASSWORD*",
+  "OPENAI_API_KEY",
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_AUTH_TOKEN",
+  "CLAUDE_CODE_OAUTH_TOKEN",
+  "GITHUB_TOKEN",
+  "GH_TOKEN",
+  "HF_TOKEN",
+  "WANDB_API_KEY"
+]
+
+[shell_environment_policy.set]
+PATH = "/home/rlatjswo/.local/bin:/home/rlatjswo/.nvm/versions/node/v22.22.2/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin"
+HOME = "/home/rlatjswo"
+CLAUDE_BIN = "/home/rlatjswo/.local/bin/claude"
+PYTHON_BIN = "/usr/bin/python3"
+PYTHONUNBUFFERED = "1"
+
+[features]
+apps = false
+
+[plugins."figma@openai-curated"]
+enabled = false
