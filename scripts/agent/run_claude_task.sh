@@ -149,13 +149,15 @@ Bash(ls data*),Bash(ls datasets*),Bash(ls outputs*),Bash(ls checkpoints*)"
 # ---------------------------------------------------------------------------
 echo "Running Claude Code (output -> $STDOUT_LOG) ..." >&2
 CLAUDE_EXIT=0
-"$CLAUDE_BIN" -p \
+printf '%s\n' "$PROMPT" | "$CLAUDE_BIN" -p \
+  --input-format text \
   --permission-mode default \
   --max-turns 30 \
   --tools "$AVAILABLE_TOOLS" \
   --allowedTools "$ALLOWED_TOOLS" \
   --disallowedTools "$DISALLOWED_TOOLS" \
-  "$PROMPT" \
+  --output-format text \
+  --no-session-persistence \
   > "$STDOUT_LOG" 2> "$STDERR_LOG" || CLAUDE_EXIT=$?
 
 echo "Claude exited with code: $CLAUDE_EXIT" >&2
@@ -205,9 +207,12 @@ else
 
     # --- Allowlist safety check (delegates to Python module) ---
     if ! python3 "$SCRIPT_DIR/check_agent_changes.py" \
+         --repo-root "$PROJECT_ROOT" \
+         "$TASK_ARG" \
          --check-cmd "$cmd" 2>/dev/null; then
       echo "  REJECT (not in allowed command family): $cmd" >&2
       VALIDATION_LINES+="REJECT: $cmd"$'\n'
+      VALIDATION_RESULT=1
       continue
     fi
     echo "  ACCEPT: $cmd" >&2
