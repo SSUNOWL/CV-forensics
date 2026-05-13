@@ -1,150 +1,139 @@
-# Task 0001: Agent Smoke Test
+# Task 0001: Agent Smoke Test Project Contract
 
-## Role
+## Role of Claude Code
 
-You are Claude Code acting as the implementation worker.
-Read `CLAUDE.md` and `docs/project_brief.md` before making changes.
-Follow this task file exactly. Do not expand scope.
+You are Claude Code, the implementation worker for this repository. Codex is the supervisor and reviewer.
 
-## Objective
+Your job is to verify the Codex -> Claude Code -> Codex review workflow by creating a small project contract artifact set. This task must not touch datasets, checkpoints, secrets, training code, or network resources.
 
-Verify that Claude Code can implement from a Codex-created task file without touching data, checkpoints, secrets, or training code.
+Do not reinterpret the project scope beyond `docs/project_brief.md` and this task file.
 
-This is a workflow smoke test, not a modeling task.
+## Files Claude May Read
 
-## Allowed Files
+- `AGENTS.md`
+- `CLAUDE.md`
+- `docs/project_brief.md`
+- `tasks/0001-agent-smoke-test.md`
+- Any file you are explicitly allowed to create or modify in this task, if it already exists
 
-You may create or edit only the following files:
+You may also run basic repository status checks such as:
+
+- `pwd`
+- `git status --short`
+- `git diff -- docs/project_contract.md configs/project_contract.json scripts/agent/validate_project_contract.py tests/test_project_contract.py`
+
+## Files Claude May Modify
+
+Claude may create or edit only these files:
 
 - `docs/project_contract.md`
 - `configs/project_contract.json`
 - `scripts/agent/validate_project_contract.py`
 - `tests/test_project_contract.py`
 
-Do not modify any other file.
+If a parent directory for one of those files does not exist, you may create that parent directory. Do not create any other files.
 
-## Hard Prohibitions
+## Forbidden Actions
 
-You must not:
+Do not:
 
-- download datasets
-- train a model
-- install packages
-- access `.env`, secrets, `data`, `datasets`, `outputs`, or `checkpoints`
-- modify unrelated files
-- run `git push`
-- create large files
-- use network access
+- Download datasets
+- Train a model
+- Install packages
+- Access network resources
+- Access `.env`, `.env.*`, secrets, data, datasets, outputs, or checkpoints
+- Inspect protected directories or protected files recursively
+- Modify unrelated files
+- Run `git push`
+- Create large files
+- Use `--permission-mode bypassPermissions`
+- Use `--dangerously-skip-permissions`
+- Use `/snap/bin/codex`
+- Use `/home/rlatjswo/.npm-global/bin/codex`
+- Use `rm -rf`
 
-## Required Implementation
+## Implementation Requirements
 
-Implement the following minimal artifacts.
+Create a small project contract that matches `docs/project_brief.md`.
 
-### 1. Project Contract Document
+1. Create `docs/project_contract.md`
+   - Summarize the agreed project goal.
+   - Include target outputs: class, mask, family, and reason.
+   - Include the two main datasets and their roles.
+   - Include the high-level architecture.
+   - Include the implementation stages.
+   - Include evaluation metrics.
+   - Include first risks and guardrails.
 
-Create `docs/project_contract.md`.
+2. Create `configs/project_contract.json`
+   - Use valid JSON.
+   - Include at least these top-level keys:
+     - `project_title`
+     - `final_goal`
+     - `target_outputs`
+     - `datasets`
+     - `architecture`
+     - `implementation_stages`
+     - `evaluation_metrics`
+     - `first_risks`
+     - `guardrails`
+   - The content must reflect `docs/project_brief.md`.
 
-Purpose:
+3. Create `scripts/agent/validate_project_contract.py`
+   - Use pure Python standard library only.
+   - Do not import third-party packages.
+   - Accept the JSON contract path as a command-line argument.
+   - Load and validate the JSON contract.
+   - Check that required top-level keys exist.
+   - Check that target outputs include class, mask, family, and reason.
+   - Check that datasets include Community Forensics-Small and SID-Set.
+   - Check that metrics include classification, Macro-F1, mask IoU, family accuracy, robustness drop, latency or FPS, and localization activation recall.
+   - Exit with status code 0 on success and non-zero on failure.
+   - Print a concise success or failure message.
 
-- summarize the agreed project goal from `docs/project_brief.md`
-- keep the scope narrow and concrete
-
-Required sections:
-
-- project goal
-- target outputs
-- datasets
-- implementation stages
-- evaluation metrics
-- non-goals for this smoke test
-
-The document must match `docs/project_brief.md` and must not introduce new project scope.
-
-### 2. JSON Contract
-
-Create `configs/project_contract.json`.
-
-It must contain, at minimum:
-
-- project title
-- final goal
-- target outputs
-- datasets
-- implementation stages
-- evaluation metrics
-
-Use a simple, explicit schema that is easy to validate in pure Python.
-The contents must align with `docs/project_brief.md`.
-
-### 3. Pure-Python Validator
-
-Create `scripts/agent/validate_project_contract.py`.
-
-Requirements:
-
-- standard library only
-- no external dependencies
-- accepts the JSON file path as a command-line argument
-- validates required top-level fields and basic structure
-- prints a short success message and exits with code `0` on success
-- prints a clear error and exits non-zero on failure
-
-The validator should check that:
-
-- required keys exist
-- lists are non-empty where expected
-- the contract reflects the brief at a high level
-
-Do not over-engineer the validator.
-
-### 4. Optional Pytest Test
-
-You may create `tests/test_project_contract.py` if `pytest` already exists in the environment.
-
-If you create it:
-
-- keep it small
-- use it only to validate the JSON contract shape/content
-- do not add new dependencies
-
-If `pytest` is not available, skip this file.
+4. Optionally create `tests/test_project_contract.py`
+   - Create this only if it can be done without installing packages.
+   - The test may use `pytest` conventions, but do not install pytest.
+   - It should check the JSON contract and/or validator behavior.
 
 ## Validation Commands
 
 Run:
 
 ```bash
-python scripts/agent/validate_project_contract.py configs/project_contract.json
+python3 scripts/agent/validate_project_contract.py configs/project_contract.json
 ```
 
-If `pytest` exists and you created the test file, also run:
+If pytest is already available without installing anything, also run:
 
 ```bash
 pytest -q tests/test_project_contract.py
 ```
 
-Also verify:
+Check the changed files:
 
 ```bash
+git status --short
 git diff -- docs/project_contract.md configs/project_contract.json scripts/agent/validate_project_contract.py tests/test_project_contract.py
-git diff --name-only
 ```
 
-The final diff must contain only allowed files.
+Do not use `python`; this repository prefers `python3`.
 
 ## Acceptance Criteria
 
-All of the following must be true:
+- `python3 scripts/agent/validate_project_contract.py configs/project_contract.json` passes.
+- If pytest already exists, `pytest -q tests/test_project_contract.py` passes.
+- `git status --short` and `git diff` show changes only in the allowed files.
+- The contract matches `docs/project_brief.md`.
+- No secrets, data, outputs, checkpoints, datasets, or network resources are accessed.
+- No dataset download, model training, package installation, or unrelated file modification occurs.
 
-1. `python scripts/agent/validate_project_contract.py configs/project_contract.json` passes.
-2. If `pytest` exists, `pytest -q tests/test_project_contract.py` passes.
-3. `git diff` contains only the allowed files.
-4. The contract matches `docs/project_brief.md`.
-5. No secrets, data, outputs, checkpoints, or network access are touched.
+## Stop Condition
 
-## Execution Notes
+Stop after implementation and validation. Report:
 
-- Keep the implementation minimal and deterministic.
-- Prefer straightforward JSON and validation logic over abstractions.
-- Do not inspect or use protected directories or files.
-- Stop after completing this task and reporting the results.
+- Files changed
+- Validation commands run and their results
+- Any skipped optional validation, with the reason
+- Confirmation that forbidden paths and actions were not touched
+
