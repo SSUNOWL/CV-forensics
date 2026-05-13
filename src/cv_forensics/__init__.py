@@ -7,6 +7,7 @@ from .contracts import (
 )
 from .evidence import build_reason
 from .outputs import ForensicsResult
+from . import config_schema
 
 __all__ = [
     "CLASS_LABELS",
@@ -16,4 +17,5 @@ __all__ = [
     "OUTPUT_FIELDS",
     "ForensicsResult",
     "build_reason",
+    "config_schema",
 ]

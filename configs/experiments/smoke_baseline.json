@@ -1,0 +1,66 @@
+{
+  "_note": "Dry-run smoke experiment only. No real training, no data download, no real paths.",
+  "schema_version": "0.1",
+  "experiment_id": "smoke_baseline_dry_run",
+  "stage": "dry_run",
+  "dry_run": true,
+  "seed": 42,
+  "image_size": 224,
+  "batch_size": 2,
+  "dataset_refs": [
+    {
+      "id": "community_forensics_small",
+      "split": "train",
+      "max_samples_dry_run": 16
+    },
+    {
+      "id": "sid_set",
+      "split": "train",
+      "max_samples_dry_run": 16
+    }
+  ],
+  "model": {
+    "backbone": "<BACKBONE_PLACEHOLDER>",
+    "backbone_candidates": ["convnext_s", "clip_vit_s"],
+    "pretrained": false,
+    "note": "Backbone is a placeholder. No weights are loaded in dry_run mode."
+  },
+  "heads": {
+    "classification": {
+      "type": "3way",
+      "labels": ["real", "synthetic", "tampered"]
+    },
+    "provenance": {
+      "type": "family",
+      "labels": ["LatDiff", "PixDiff", "GAN", "Other", "Real-or-N/A"],
+      "sid_set_strategy": "mask_out"
+    },
+    "localization": {
+      "type": "conditional",
+      "tau_placeholder": 0.5,
+      "note": "Activated only when tampered_score >= tau. tau set based on tampered recall."
+    },
+    "explanation_template": {
+      "type": "template_based",
+      "note": "Rule-based evidence template; no LLM in initial implementation."
+    }
+  },
+  "losses": ["cross_entropy_3way", "cross_entropy_family", "binary_mask_bce"],
+  "metrics": [
+    "accuracy_3way",
+    "macro_f1",
+    "tampered_mask_iou",
+    "generator_family_accuracy",
+    "perturbation_robustness_drop",
+    "latency_ms",
+    "fps",
+    "localization_activation_recall"
+  ],
+  "safety_flags": {
+    "no_download": true,
+    "no_training": true,
+    "no_network": true,
+    "no_protected_paths": true,
+    "dry_run_confirmed": true
+  }
+}

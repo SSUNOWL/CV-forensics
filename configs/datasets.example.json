@@ -1,0 +1,60 @@
+{
+  "_note": "Example config only. All paths are placeholders. No real data paths, secrets, or machine-specific values.",
+  "datasets": [
+    {
+      "id": "community_forensics_small",
+      "display_name": "Community Forensics-Small",
+      "primary_roles": [
+        "shared visual backbone pre-training",
+        "generator-family provenance head training"
+      ],
+      "root_placeholder": "<CF_SMALL_ROOT>",
+      "splits": {
+        "train": "<CF_SMALL_ROOT>/train",
+        "val": "<CF_SMALL_ROOT>/val",
+        "eval": "<CF_SMALL_ROOT>/eval"
+      },
+      "required_metadata_fields": ["architecture", "model_name", "subset"],
+      "supported_labels": {
+        "binary_class": ["real", "fake"],
+        "family": ["LatDiff", "PixDiff", "GAN", "Other", "Real-or-N/A"]
+      },
+      "guardrail_notes": [
+        "Use generator-holdout or model_name-holdout validation to prevent data leakage.",
+        "Do not use random split as it risks train/val generator overlap.",
+        "architecture metadata is the primary supervision for family/provenance labels."
+      ]
+    },
+    {
+      "id": "sid_set",
+      "display_name": "SID-Set",
+      "primary_roles": [
+        "3-way classification fine-tuning",
+        "tampered mask localization"
+      ],
+      "root_placeholder": "<SID_SET_ROOT>",
+      "splits": {
+        "train": "<SID_SET_ROOT>/train",
+        "val": "<SID_SET_ROOT>/val"
+      },
+      "size_note": "train ~210K + val ~30K = ~240K rows (initial implementation target)",
+      "required_target_fields": {
+        "class_label": ["real", "synthetic", "tampered"],
+        "tampered_mask": "binary mask image or RLE; available only for tampered samples"
+      },
+      "family_provenance_note": "SID-Set samples may not carry Community Forensics-Small family labels. During Stage 3 fine-tuning, apply one of: (1) freeze provenance head, (2) mask-out family loss for SID-Set samples, or (3) mix CF-Small mini-batches to maintain provenance supervision.",
+      "guardrail_notes": [
+        "Do not apply family/provenance loss to SID-Set samples without verification that labels exist.",
+        "Incorrect family loss on SID-Set samples can corrupt provenance head training."
+      ]
+    }
+  ],
+  "protected_path_rules": {
+    "forbidden_prefixes": [
+      "/home/", "/mnt/", "/root/", "data/", "datasets/",
+      "outputs/", "checkpoints/", ".env", "secrets"
+    ],
+    "forbidden_patterns": ["http://", "https://", "ftp://", "s3://", "gs://"],
+    "policy": "All root and split paths in production configs must be set via environment substitution at runtime. Example configs use placeholder tokens only."
+  }
+}
