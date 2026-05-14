@@ -1,0 +1,59 @@
+{
+  "_note": "Dry-run combined planning manifest only. No real local paths, protected paths, or URLs. No datasets are downloaded and no models are trained.",
+  "schema_version": "1.0",
+  "manifest_kind": "combined_manifest",
+  "dataset_id": "combined_smoke",
+  "dry_run": true,
+  "no_download": true,
+  "no_training": true,
+  "no_network": true,
+  "root_placeholder": "<MANIFEST_ONLY_NO_DATA>",
+  "referenced_datasets": [
+    "community_forensics_small",
+    "sid_set"
+  ],
+  "stage_plan": [
+    "cf_small_binary_backbone",
+    "provenance_head",
+    "sid_set_multihead_finetune",
+    "social_media_robustness"
+  ],
+  "validation_strategy": [
+    "generator_holdout",
+    "model_name_holdout",
+    "compeval_eval"
+  ],
+  "sid_family_policy": [
+    "freeze",
+    "mask_out",
+    "mixed_cf_small_batch"
+  ],
+  "perturbations": [
+    "jpeg",
+    "resize",
+    "crop",
+    "rotation",
+    "padding",
+    "shear",
+    "screenshot",
+    "text_overlay",
+    "sticker_overlay",
+    "recompression_chain"
+  ],
+  "metrics": [
+    "accuracy_3way",
+    "macro_f1",
+    "tampered_mask_iou",
+    "generator_family_accuracy",
+    "perturbation_robustness_drop",
+    "latency_ms",
+    "fps",
+    "localization_activation_recall"
+  ],
+  "notes": [
+    "This manifest is for validation and multi-dataset planning only.",
+    "No datasets are downloaded, no models are trained, no network is accessed.",
+    "Reflects the four-stage project plan from docs/project_brief.md.",
+    "sid_family_policy lists candidate strategies; the active policy is chosen at experiment config time."
+  ]
+}

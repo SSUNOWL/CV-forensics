@@ -1,0 +1,51 @@
+{
+  "_note": "Example manifest only. No real local paths, protected paths, or URLs. Do not use as a production config.",
+  "schema_version": "1.0",
+  "manifest_kind": "dataset_manifest",
+  "dataset_id": "sid_set",
+  "display_name": "SID-Set",
+  "dry_run": true,
+  "no_download": true,
+  "no_training": true,
+  "no_network": true,
+  "root_placeholder": "<SID_SET_ROOT>",
+  "primary_roles": [
+    "three_way_classification",
+    "tampered_mask_localization",
+    "mask_supervision"
+  ],
+  "tasks": [
+    "three_way_classification",
+    "tampered_mask_localization"
+  ],
+  "class_labels": [
+    "real",
+    "synthetic",
+    "tampered"
+  ],
+  "target_fields": [
+    "image_ref",
+    "class_label",
+    "tampered_mask_ref",
+    "split"
+  ],
+  "expected_split_rows": {
+    "train": 210000,
+    "validation": 30000,
+    "total_initial": 240000
+  },
+  "family_supervision": {
+    "status": "unavailable",
+    "allowed_policies": [
+      "freeze",
+      "mask_out",
+      "mixed_cf_small_batch"
+    ]
+  },
+  "notes": [
+    "SID-Set may lack Community Forensics-Small compatible family labels.",
+    "During Stage 3 fine-tuning, family/provenance loss must use an explicit policy.",
+    "Supported policies: freeze provenance head, mask-out family loss for SID-Set samples, or mix CF-Small mini-batches.",
+    "expected_split_rows values are planning metadata only and do not trigger any download or verification."
+  ]
+}

@@ -8,6 +8,7 @@ from .contracts import (
 from .evidence import build_reason
 from .outputs import ForensicsResult
 from . import config_schema
+from . import dataset_manifest
 
 __all__ = [
     "CLASS_LABELS",
@@ -18,4 +19,5 @@ __all__ = [
     "ForensicsResult",
     "build_reason",
     "config_schema",
+    "dataset_manifest",
 ]

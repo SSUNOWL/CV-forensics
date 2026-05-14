@@ -1,0 +1,57 @@
+{
+  "_note": "Example manifest only. No real local paths, protected paths, or URLs. Do not use as a production config.",
+  "schema_version": "1.0",
+  "manifest_kind": "dataset_manifest",
+  "dataset_id": "community_forensics_small",
+  "display_name": "Community Forensics-Small",
+  "dry_run": true,
+  "no_download": true,
+  "no_training": true,
+  "no_network": true,
+  "root_placeholder": "<CF_SMALL_ROOT>",
+  "primary_roles": [
+    "shared_backbone_pretraining",
+    "coarse_provenance",
+    "generator_holdout_validation"
+  ],
+  "tasks": [
+    "binary_real_fake",
+    "coarse_provenance"
+  ],
+  "expected_metadata_fields": [
+    "architecture",
+    "model_name",
+    "subset"
+  ],
+  "class_labels": [
+    "real",
+    "synthetic"
+  ],
+  "family_labels": [
+    "LatDiff",
+    "PixDiff",
+    "GAN",
+    "Other",
+    "Real-or-N/A"
+  ],
+  "split_plan": {
+    "train": "main training split",
+    "generator_holdout": "held-out generator for unseen generalization evaluation",
+    "model_name_holdout": "held-out model_name for fine-grained generalization check",
+    "compeval_eval": "CommunityForensics-Eval CompEval split as external evaluation set"
+  },
+  "perturbation_notes": [
+    "jpeg",
+    "resize",
+    "crop",
+    "rotation",
+    "padding",
+    "shear"
+  ],
+  "notes": [
+    "Exact model attribution is out of scope. Provenance uses coarse architecture-based family labels only.",
+    "architecture metadata is the primary supervision for family labels.",
+    "model_name and subset are for distribution analysis and holdout planning only.",
+    "Prefer generator-holdout or model_name-holdout over random split to prevent train/validation leakage."
+  ]
+}
