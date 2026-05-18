@@ -13,6 +13,7 @@ from . import model_output_schema
 from . import explanation_templates
 from . import inference_stub
 from . import metrics
+from . import training_dry_run
 from .inference_stub import check_fake_input_config_safety
 from .metrics import check_toy_metric_config_safety
 
@@ -32,4 +33,5 @@ __all__ = [
     "metrics",
     "check_fake_input_config_safety",
     "check_toy_metric_config_safety",
+    "training_dry_run",
 ]

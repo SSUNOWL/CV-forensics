@@ -1,0 +1,33 @@
+{
+  "_note": "Dry-run training loop skeleton example. No real data, images, masks, checkpoints, or network access. All dataset_manifest_refs are symbolic names only.",
+  "schema_version": "0.1.0",
+  "dry_run": true,
+  "no_download": true,
+  "no_training": true,
+  "no_network": true,
+  "no_outputs": true,
+  "no_checkpoints": true,
+  "stage": "dry_run",
+  "epochs": 2,
+  "batch_size": 4,
+  "seed": 42,
+  "threshold_tau": 0.5,
+  "family_policy": "mask_out",
+  "dataset_plan": "community_forensics_small_backbone_then_sid_set_finetune",
+  "fake_input_config_ref": "configs/inference/fake_inputs.example.json",
+  "toy_metrics_config_ref": "configs/metrics/toy_metrics.example.json",
+  "dataset_manifest_refs": [
+    "community_forensics_small_smoke",
+    "sid_set_smoke"
+  ],
+  "metric_names": [
+    "accuracy_3way",
+    "macro_f1",
+    "tampered_mask_iou",
+    "generator_family_accuracy",
+    "perturbation_robustness_drop",
+    "latency_ms",
+    "fps",
+    "localization_activation_recall"
+  ]
+}
