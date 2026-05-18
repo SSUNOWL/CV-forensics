@@ -4,9 +4,9 @@
 
 Create a Community Forensics-Small local subset smoke plan.
 
-## Role of Claude Code
+## Role
 
-Claude Code is the implementation worker. Codex is the supervisor, task writer, delegation controller, reviewer, and limited repair manager.
+Codex is the task writer, implementation worker, reviewer, and limited repair manager for this task because Claude Code is currently unavailable due to usage limits.
 
 Implement only this task. Do not reinterpret the project scope beyond this task file.
 
@@ -16,7 +16,7 @@ Prepare a tiny local subset smoke workflow for Community Forensics-Small, gated 
 
 This task must not download datasets, run full training, inspect actual dataset directories recursively, read real images, write outputs, or write checkpoints. It should define a symbolic, safe, local-path-gated plan that can later be converted into a real local-data smoke test only after explicit user approval.
 
-## Files Claude May Read
+## Files Codex May Read
 
 - `AGENTS.md`
 - `CLAUDE.md`
@@ -56,18 +56,27 @@ This task must not download datasets, run full training, inspect actual dataset 
 
 If proposal PDFs or slides are absent, do not fail. Rely on `docs/project_brief.md`, the project contract, planning docs, and existing schema docs.
 
-## Files Claude May Modify
+## Files Codex May Modify
 
 - `configs/local_data/cf_small_subset_smoke.example.json`
 - `scripts/agent/validate_cf_small_subset_smoke.py`
 - `tests/test_cf_small_subset_smoke.py`
 - `docs/cf_small_subset_smoke.md`
 
-If a parent directory for an allowed file does not exist, Claude may create that parent directory. Claude must not create any other files.
+## Files Claude May Modify
+
+This Codex-only task preserves this section name so `scripts/agent/check_agent_changes.py` can enforce the allowed modification list.
+
+- `configs/local_data/cf_small_subset_smoke.example.json`
+- `scripts/agent/validate_cf_small_subset_smoke.py`
+- `tests/test_cf_small_subset_smoke.py`
+- `docs/cf_small_subset_smoke.md`
+
+If a parent directory for an allowed file does not exist, Codex may create that parent directory. Codex must not create any other files.
 
 ## Forbidden Actions
 
-Claude must not:
+Codex must not:
 
 - download datasets
 - train models
@@ -248,6 +257,10 @@ python3 tests/test_cf_small_subset_smoke.py
 ```
 
 ```bash
+python3 scripts/agent/check_agent_changes.py tasks/0012-cf-small-local-subset-smoke-plan.md
+```
+
+```bash
 grep -q CF_SMALL_SUBSET_SMOKE_OK docs/cf_small_subset_smoke.md
 ```
 
@@ -279,6 +292,7 @@ git diff -- configs/local_data/cf_small_subset_smoke.example.json scripts/agent/
 
 - `python3 scripts/agent/validate_cf_small_subset_smoke.py configs/local_data/cf_small_subset_smoke.example.json` passes.
 - `python3 tests/test_cf_small_subset_smoke.py` passes.
+- `python3 scripts/agent/check_agent_changes.py tasks/0012-cf-small-local-subset-smoke-plan.md` passes.
 - `grep -q CF_SMALL_SUBSET_SMOKE_OK docs/cf_small_subset_smoke.md` passes.
 - Smoke plan is local-path gated.
 - Readiness config is symbolic and dry-run safe.
