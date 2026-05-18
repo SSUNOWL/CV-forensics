@@ -1,0 +1,136 @@
+{
+  "schema_version": "0.1.0",
+  "plan_name": "sid_set_multihead_baseline_plan",
+  "dataset_name": "SID-Set",
+  "execution_mode": "plan_only",
+  "dry_run": true,
+  "no_download": true,
+  "no_training": true,
+  "no_network": true,
+  "no_outputs": true,
+  "no_checkpoints": true,
+  "no_real_image_reading": true,
+  "no_real_mask_reading": true,
+  "requires_user_approval_for_real_training": true,
+  "local_data_gate_ref": "configs/local_data/readiness.example.json",
+  "sid_set_subset_smoke_ref": "configs/local_data/sid_set_subset_smoke.example.json",
+  "cf_small_baseline_ref": "configs/training/cf_small_baseline.example.json",
+  "dataset_role": {
+    "three_way_classification_planning": true,
+    "tampered_localization_planning": true,
+    "evidence_reason_alignment_planning": true
+  },
+  "model_plan": {
+    "shared_visual_backbone": "shared visual backbone with CF-Small initialized or preplanned backbone handoff",
+    "classification_head": "3-way classification head for real synthetic tampered",
+    "provenance_head": "generator-family provenance head with missing-label policy",
+    "localization_head": "conditional localization head",
+    "evidence_aggregation": "evidence aggregation for template reason",
+    "template_based_explanation": true
+  },
+  "head_plan": {
+    "classification_head": "3-way class logits",
+    "provenance_head": "coarse family logits when labels exist",
+    "localization_head": "conditional tampered mask prediction plan",
+    "evidence_aggregation": "deterministic reason evidence signals"
+  },
+  "classification_policy": {
+    "labels": ["real", "synthetic", "tampered"],
+    "required_exact_label_set": true
+  },
+  "localization_policy": {
+    "conditional_activation": "tampered_score >= threshold_tau activates localization",
+    "threshold_tau": 0.35,
+    "mask_iou_metric": "mask IoU",
+    "activation_recall_metric": "localization activation recall",
+    "false_negative_risk": "A high threshold_tau creates false negative risk by skipping true tampered samples."
+  },
+  "mask_policy": {
+    "tampered": "requires mask/localization planning",
+    "real": "must not require tampered masks",
+    "synthetic": "may omit tampered masks unless explicitly annotated",
+    "read_real_mask_files": false,
+    "read_real_image_files": false
+  },
+  "family_policy": {
+    "missing_family_labels_allowed": true,
+    "missing_label_mapping": {
+      "real": "Real-or-N/A",
+      "synthetic": "Unknown",
+      "tampered": "Unknown"
+    },
+    "provenance_training_gated_until_labels_confirmed": true,
+    "cf_small_family_initialization": "CF-Small provenance planning can initialize or regularize the family head later."
+  },
+  "explanation_policy": {
+    "mode": "deterministic_template_based",
+    "reason_source": "evidence signals and output schema",
+    "free_form_hallucination_allowed": false,
+    "llm_call_required": false
+  },
+  "threshold_policy": {
+    "threshold_tau": 0.35,
+    "selection_basis": "prioritize localization activation recall before compute savings",
+    "review_false_negatives": true
+  },
+  "loss_plan": {
+    "mode": "symbolic_plan_only",
+    "classification_loss": "planned",
+    "optional_family_loss": "mask-out or freeze when labels are missing",
+    "conditional_localization_loss": "planned for approved tampered masks",
+    "evidence_consistency_loss": "planned",
+    "executes_training": false
+  },
+  "freeze_policy": {
+    "freeze_shared_backbone_initial_smoke_option": true,
+    "unfreeze_selected_layers_after_local_smoke_option": true,
+    "execute_freezing_now": false
+  },
+  "batch_mixing_policy": {
+    "sid_set_only_baseline_option": true,
+    "optional_cf_small_auxiliary_batch_policy": true,
+    "execute_batch_loading_now": false
+  },
+  "split_policy": {
+    "train_validation_test_separation": true,
+    "avoid_leakage": true,
+    "class_balance_required": ["real", "synthetic", "tampered"],
+    "mask_availability_checks_after_local_path_approval": true
+  },
+  "evaluation_policy": {
+    "mode": "plan_only",
+    "run_evaluation": false,
+    "requires_approved_manifest_before_execution": true
+  },
+  "metric_plan": {
+    "required_metrics": [
+      "3-way accuracy",
+      "Macro-F1",
+      "mask IoU",
+      "generator-family accuracy",
+      "localization activation recall",
+      "latency",
+      "FPS"
+    ]
+  },
+  "output_policy": {
+    "write_outputs": false,
+    "requires_explicit_approval_before_writing": true
+  },
+  "checkpoint_policy": {
+    "write_checkpoints": false,
+    "requires_explicit_approval_before_writing": true
+  },
+  "handoff_to_pre_sns_baseline": {
+    "task_0016_collects_pre_sns_baseline_report": true,
+    "sns_augmentation_waits_for_pre_sns_baseline": true
+  },
+  "validation_notes": [
+    "Validate symbolic SID-Set multi-head baseline planning only.",
+    "Do not download SID-Set.",
+    "Do not read images or masks.",
+    "Do not run training or optimization.",
+    "Do not write outputs or checkpoints.",
+    "SNS augmentation is out of scope."
+  ]
+}
