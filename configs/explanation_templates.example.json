@@ -1,0 +1,56 @@
+{
+  "_note": "DRY-RUN TEMPLATE EXAMPLE — template IDs and placeholder documentation. No LLM required.",
+  "templates": {
+    "real": {
+      "id": "real",
+      "korean_template": "실제(real) 이미지로 분류됨 (신뢰도 {class_confidence}). 생성 또는 조작 흔적이 탐지되지 않음.",
+      "required_placeholders": ["class_confidence"]
+    },
+    "synthetic": {
+      "id": "synthetic",
+      "korean_template": "AI 생성(synthetic) 이미지로 분류됨 (신뢰도 {class_confidence}). 생성 계열은 {family_label}로 추정됨 (신뢰도 {family_confidence}). 이는 coarse 계열 추정이며 정확한 모델 귀속이 아님.",
+      "required_placeholders": ["class_confidence", "family_label", "family_confidence"]
+    },
+    "tampered_localized": {
+      "id": "tampered_localized",
+      "korean_template": "조작(tampered) 이미지로 분류됨 (신뢰도 {class_confidence}). 조작 의심 영역이 이미지 면적의 약 {mask_area_pct}%에서 활성화됨. 생성 계열은 {family_label}로 추정됨 (신뢰도 {family_confidence}). 이는 coarse 계열 추정이며 정확한 모델 귀속이 아님.",
+      "required_placeholders": ["class_confidence", "mask_area_pct", "family_label", "family_confidence"]
+    },
+    "tampered_not_localized": {
+      "id": "tampered_not_localized",
+      "korean_template": "조작(tampered) 이미지로 분류됨 (신뢰도 {class_confidence}). tampered 점수 ({tampered_score})가 임계값 tau ({threshold_tau}) 미만으로 localization head가 활성화되지 않음. 생성 계열은 {family_label}로 추정됨 (신뢰도 {family_confidence}). 이는 coarse 계열 추정이며 정확한 모델 귀속이 아님.",
+      "required_placeholders": ["class_confidence", "tampered_score", "threshold_tau", "family_label", "family_confidence"]
+    },
+    "low_confidence": {
+      "id": "low_confidence",
+      "korean_template": "분류 신뢰도가 낮음 (최고 신뢰도 {class_confidence}). 결과는 참고용으로만 활용 권장.",
+      "required_placeholders": ["class_confidence"]
+    },
+    "family_estimated": {
+      "id": "family_estimated",
+      "korean_template": "생성 계열은 {family_label}로 추정됨 (신뢰도 {family_confidence}). 이는 coarse 계열 추정이며 정확한 모델 귀속이 아님.",
+      "required_placeholders": ["family_label", "family_confidence"]
+    },
+    "family_unavailable": {
+      "id": "family_unavailable",
+      "korean_template": "생성 계열 정보 미제공 (Real-or-N/A). 계열 추정이 적용되지 않음.",
+      "required_placeholders": []
+    },
+    "social_media_perturbation": {
+      "id": "social_media_perturbation",
+      "korean_template": "소셜 미디어 변형 감지됨: {perturbation_tags}. 변형으로 인해 분류 성능이 저하될 수 있음.",
+      "required_placeholders": ["perturbation_tags"]
+    }
+  },
+  "documented_placeholders": {
+    "class_label": "class label string — real / synthetic / tampered",
+    "class_confidence": "probability of predicted class label (0.0 to 1.0)",
+    "family_label": "estimated generator family — LatDiff / PixDiff / GAN / Other / Real-or-N/A",
+    "family_confidence": "probability of predicted family label (0.0 to 1.0)",
+    "mask_area_pct": "percentage of image area flagged by localization head (0.0 to 100.0)",
+    "localization_head": "localization state string — activated / skipped_below_threshold / not_applicable / unavailable",
+    "threshold_tau": "conditional localization activation threshold",
+    "tampered_score": "tampered class probability from the 3-way classification head",
+    "perturbation_tags": "comma-separated list of applied social-media perturbation tags"
+  }
+}

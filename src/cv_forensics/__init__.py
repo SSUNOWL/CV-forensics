@@ -9,6 +9,8 @@ from .evidence import build_reason
 from .outputs import ForensicsResult
 from . import config_schema
 from . import dataset_manifest
+from . import model_output_schema
+from . import explanation_templates
 
 __all__ = [
     "CLASS_LABELS",
@@ -20,4 +22,6 @@ __all__ = [
     "build_reason",
     "config_schema",
     "dataset_manifest",
+    "model_output_schema",
+    "explanation_templates",
 ]

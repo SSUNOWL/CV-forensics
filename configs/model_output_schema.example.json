@@ -1,0 +1,113 @@
+{
+  "_note": "DRY-RUN SCHEMA EXAMPLE — not a real model prediction. For schema documentation only.",
+  "schema_version": "0.1.0",
+  "class": "tampered",
+  "class_conf": {
+    "real": 0.03,
+    "synthetic": 0.08,
+    "tampered": 0.89
+  },
+  "family": "LatDiff",
+  "family_conf": {
+    "LatDiff": 0.78,
+    "PixDiff": 0.14,
+    "GAN": 0.05,
+    "Other": 0.03,
+    "Real-or-N/A": 0.00
+  },
+  "localization_head": "activated",
+  "mask_area_pct": 11.2,
+  "threshold_tau": 0.5,
+  "tampered_score": 0.89,
+  "evidence": [
+    {"signal_id": "boundary_discontinuity", "description": "schema_example"},
+    {"signal_id": "texture_inconsistency", "description": "schema_example"},
+    {"signal_id": "local_mask_activation", "description": "schema_example"},
+    {"signal_id": "provenance_family_signal", "description": "schema_example"}
+  ],
+  "perturbations": ["jpeg"],
+  "reason": "조작(tampered) 이미지로 분류됨 (신뢰도 89%). 조작 의심 영역이 이미지 면적의 약 11.2%에서 활성화됨. 생성 계열은 LatDiff로 추정됨 (신뢰도 78%). 이는 coarse 계열 추정이며 정확한 모델 귀속이 아님. 탐지된 증거 신호: 경계 불연속성, 텍스처 불일치, 로컬 마스크 활성화, 출처 계열 신호. 경계 불연속성이 탐지되어 편집 흔적이 시사됨. 텍스처 불일치로 부분 합성 가능성이 있음. 소셜 미디어 변형 감지됨: jpeg. 변형으로 인해 분류 성능이 저하될 수 있음.",
+  "mask_ref": "<MASK_NOT_MATERIALIZED>",
+  "visualization_ref": "<VISUALIZATION_NOT_MATERIALIZED>",
+  "examples": [
+    {
+      "_note": "synthetic without localization — localization not applicable for synthetic class",
+      "schema_version": "0.1.0",
+      "class": "synthetic",
+      "class_conf": {
+        "real": 0.05,
+        "synthetic": 0.90,
+        "tampered": 0.05
+      },
+      "family": "GAN",
+      "family_conf": {
+        "LatDiff": 0.05,
+        "PixDiff": 0.05,
+        "GAN": 0.85,
+        "Other": 0.05,
+        "Real-or-N/A": 0.00
+      },
+      "localization_head": "not_applicable",
+      "mask_area_pct": null,
+      "threshold_tau": 0.5,
+      "tampered_score": 0.05,
+      "evidence": [
+        {"signal_id": "global_synthetic_artifact", "description": "schema_example"}
+      ],
+      "perturbations": ["none"],
+      "reason": "AI 생성(synthetic) 이미지로 분류됨 (신뢰도 90%). 생성 계열은 GAN으로 추정됨 (신뢰도 85%). 이는 coarse 계열 추정이며 정확한 모델 귀속이 아님. 탐지된 증거 신호: 전역 합성 아티팩트. 전역 합성 아티팩트가 탐지되어 AI 생성 가능성을 시사함."
+    },
+    {
+      "_note": "real image with Real-or-N/A family — no manipulation or generation detected",
+      "schema_version": "0.1.0",
+      "class": "real",
+      "class_conf": {
+        "real": 0.95,
+        "synthetic": 0.03,
+        "tampered": 0.02
+      },
+      "family": "Real-or-N/A",
+      "family_conf": {
+        "LatDiff": 0.01,
+        "PixDiff": 0.01,
+        "GAN": 0.01,
+        "Other": 0.01,
+        "Real-or-N/A": 0.96
+      },
+      "localization_head": "not_applicable",
+      "mask_area_pct": null,
+      "threshold_tau": 0.5,
+      "tampered_score": 0.02,
+      "evidence": [],
+      "perturbations": ["none"],
+      "reason": "실제(real) 이미지로 분류됨 (신뢰도 95%). 생성 또는 조작 흔적이 탐지되지 않음."
+    },
+    {
+      "_note": "tampered below threshold — localization skipped because tampered_score < threshold_tau",
+      "schema_version": "0.1.0",
+      "class": "tampered",
+      "class_conf": {
+        "real": 0.20,
+        "synthetic": 0.15,
+        "tampered": 0.65
+      },
+      "family": "LatDiff",
+      "family_conf": {
+        "LatDiff": 0.60,
+        "PixDiff": 0.20,
+        "GAN": 0.10,
+        "Other": 0.10,
+        "Real-or-N/A": 0.00
+      },
+      "localization_head": "skipped_below_threshold",
+      "mask_area_pct": null,
+      "threshold_tau": 0.75,
+      "tampered_score": 0.65,
+      "evidence": [
+        {"signal_id": "boundary_discontinuity", "description": "schema_example"}
+      ],
+      "perturbations": ["none"],
+      "reason": "조작(tampered) 이미지로 분류됨 (신뢰도 65%). tampered 점수 (0.650)가 임계값 tau (0.750) 미만으로 localization head가 활성화되지 않음. 생성 계열은 LatDiff로 추정됨 (신뢰도 60%). 이는 coarse 계열 추정이며 정확한 모델 귀속이 아님. 탐지된 증거 신호: 경계 불연속성. 경계 불연속성이 탐지되어 편집 흔적이 시사됨."
+    }
+  ]
+}
