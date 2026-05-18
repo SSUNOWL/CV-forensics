@@ -1,0 +1,77 @@
+{
+  "schema_version": "0.1.0",
+  "dataset_name": "SID-Set",
+  "dry_run": true,
+  "no_download": true,
+  "no_training": true,
+  "no_network": true,
+  "no_outputs": true,
+  "no_checkpoints": true,
+  "no_real_image_reading": true,
+  "no_real_mask_reading": true,
+  "local_data_gate_ref": "configs/local_data/readiness.example.json",
+  "readiness_policy": {
+    "mode": "symbolic_until_explicit_user_approval",
+    "local_paths_approved": false,
+    "requires_validated_manifest": true,
+    "requires_user_approval": true,
+    "notes": "Keep SID-Set references symbolic until explicit user approval and manifest validation are complete."
+  },
+  "subset_policy": {
+    "mode": "tiny_symbolic_class_balanced_plan",
+    "planned_samples": {
+      "real": 4,
+      "synthetic": 4,
+      "tampered": 4
+    },
+    "max_total_manifest_rows": 12,
+    "real_file_access": "forbidden",
+    "recursive_directory_scan": "forbidden"
+  },
+  "split_policy": {
+    "mode": "symbolic_manifest_rows_only",
+    "planned_splits": ["train_smoke", "validation_smoke"],
+    "train_rows": 9,
+    "validation_rows": 3,
+    "class_balance_required": true
+  },
+  "class_policy": {
+    "labels": ["real", "synthetic", "tampered"],
+    "required_exact_label_set": true,
+    "task": "3-way classification"
+  },
+  "mask_policy": {
+    "tampered": "requires localization planning",
+    "real": "must not require tampered masks",
+    "synthetic": "may omit tampered masks unless explicitly annotated",
+    "read_real_mask_files": false,
+    "read_real_image_files": false
+  },
+  "family_policy": {
+    "sid_set_family_labels_may_be_missing": true,
+    "missing_label_policy": {
+      "real": "Real-or-N/A",
+      "synthetic": "Unknown",
+      "tampered": "Unknown"
+    },
+    "provenance_training_gated_until_labels_confirmed": true,
+    "family_loss_policy": "mask-out or freeze provenance head until labels are confirmed"
+  },
+  "localization_policy": {
+    "conditional_activation": "activate localization when tampered_score >= threshold_tau",
+    "threshold_tau_ref": "threshold_tau",
+    "primary_metric": "mask IoU",
+    "recall_metric": "localization activation recall",
+    "false_negative_risk": "high threshold_tau can skip tampered samples"
+  },
+  "threshold_tau": 0.35,
+  "expected_task_outputs": ["class", "mask", "family", "reason"],
+  "validation_notes": [
+    "Validate symbolic SID-Set subset planning only.",
+    "Do not download SID-Set.",
+    "Do not open media files.",
+    "Do not run training.",
+    "Do not write artifact directories.",
+    "SNS augmentation is out of scope."
+  ]
+}
