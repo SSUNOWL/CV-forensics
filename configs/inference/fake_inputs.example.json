@@ -1,0 +1,66 @@
+{
+  "schema_version": "0.1.0",
+  "dry_run": true,
+  "no_download": true,
+  "no_training": true,
+  "no_network": true,
+  "description": "Example fake input config for task 0008 lightweight inference stub. No real images, masks, datasets, outputs, or checkpoints are referenced.",
+  "default_threshold_tau": 0.5,
+  "fake_inputs": [
+    {
+      "input_id": "fake_real_clean_001",
+      "scenario": "real_clean",
+      "class_hint": "real",
+      "family_hint": "Real-or-N/A",
+      "tampered_score": 0.05,
+      "threshold_tau": 0.5,
+      "mask_area_hint_pct": null,
+      "perturbations": ["none"],
+      "evidence_hints": []
+    },
+    {
+      "input_id": "fake_synthetic_latdiff_001",
+      "scenario": "synthetic_latdiff",
+      "class_hint": "synthetic",
+      "family_hint": "LatDiff",
+      "tampered_score": 0.10,
+      "threshold_tau": 0.5,
+      "mask_area_hint_pct": null,
+      "perturbations": ["jpeg"],
+      "evidence_hints": ["global_synthetic_artifact", "provenance_family_signal"]
+    },
+    {
+      "input_id": "fake_tampered_localized_001",
+      "scenario": "tampered_localized",
+      "class_hint": "tampered",
+      "family_hint": "LatDiff",
+      "tampered_score": 0.82,
+      "threshold_tau": 0.5,
+      "mask_area_hint_pct": 11.2,
+      "perturbations": ["jpeg", "recompression_chain"],
+      "evidence_hints": ["boundary_discontinuity", "texture_inconsistency"]
+    },
+    {
+      "input_id": "fake_tampered_below_threshold_001",
+      "scenario": "tampered_below_threshold",
+      "class_hint": "tampered",
+      "family_hint": "GAN",
+      "tampered_score": 0.35,
+      "threshold_tau": 0.5,
+      "mask_area_hint_pct": null,
+      "perturbations": ["resize", "crop"],
+      "evidence_hints": ["boundary_discontinuity"]
+    },
+    {
+      "input_id": "fake_low_confidence_001",
+      "scenario": "low_confidence",
+      "class_hint": "low_confidence",
+      "family_hint": "Other",
+      "tampered_score": 0.30,
+      "threshold_tau": 0.5,
+      "mask_area_hint_pct": null,
+      "perturbations": ["screenshot", "text_overlay"],
+      "evidence_hints": ["low_confidence"]
+    }
+  ]
+}

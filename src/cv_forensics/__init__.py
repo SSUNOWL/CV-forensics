@@ -11,6 +11,8 @@ from . import config_schema
 from . import dataset_manifest
 from . import model_output_schema
 from . import explanation_templates
+from . import inference_stub
+from .inference_stub import check_fake_input_config_safety
 
 __all__ = [
     "CLASS_LABELS",
@@ -24,4 +26,6 @@ __all__ = [
     "dataset_manifest",
     "model_output_schema",
     "explanation_templates",
+    "inference_stub",
+    "check_fake_input_config_safety",
 ]
