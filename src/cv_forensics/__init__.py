@@ -14,6 +14,7 @@ from . import explanation_templates
 from . import inference_stub
 from . import metrics
 from . import training_dry_run
+from . import local_data_gate
 from .inference_stub import check_fake_input_config_safety
 from .metrics import check_toy_metric_config_safety
 
@@ -34,4 +35,5 @@ __all__ = [
     "check_fake_input_config_safety",
     "check_toy_metric_config_safety",
     "training_dry_run",
+    "local_data_gate",
 ]

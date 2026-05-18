@@ -1,0 +1,53 @@
+{
+  "schema_version": "0.1.0",
+  "dry_run": true,
+  "no_download": true,
+  "no_training": true,
+  "no_network": true,
+  "no_outputs": true,
+  "no_checkpoints": true,
+  "dataset_plan": {
+    "cf_small": {
+      "role": "backbone_pretraining",
+      "status": "planned_not_downloaded",
+      "manifest_ref": "community_forensics_small"
+    },
+    "sid_set": {
+      "role": "multihead_finetuning",
+      "status": "planned_not_downloaded",
+      "manifest_ref": "sid_set"
+    }
+  },
+  "manifest_refs": [
+    "configs/manifests/community_forensics_small.example.json",
+    "configs/manifests/sid_set.example.json",
+    "configs/manifests/combined_smoke_manifest.example.json"
+  ],
+  "local_path_policy": {
+    "policy": "symbolic_only",
+    "note": "No real local paths are configured. All path references remain symbolic until explicit user approval."
+  },
+  "output_policy": {
+    "policy": "no_outputs",
+    "note": "No output directories are configured in dry-run mode. Output policy will be established after local readiness approval."
+  },
+  "checkpoint_policy": {
+    "policy": "no_checkpoints",
+    "note": "No checkpoint directories are configured in dry-run mode. Checkpoint policy will be established after local readiness approval."
+  },
+  "approval": {
+    "local_data_approved": false,
+    "approved_by": null,
+    "approval_date": null,
+    "note": "Explicit user approval is required before any real local data access or training begins."
+  },
+  "protected_path_exclusions": [
+    ".env",
+    ".env.*",
+    "secrets",
+    "data",
+    "datasets",
+    "outputs",
+    "checkpoints"
+  ]
+}
