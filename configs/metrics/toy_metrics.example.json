@@ -1,0 +1,55 @@
+{
+  "_comment": "Task 0009 dry-run toy metrics config. Contains only toy labels, nested-list masks, and scalar values. No real data, images, masks, outputs, checkpoints, or network access.",
+  "dry_run": true,
+  "no_download": true,
+  "no_training": true,
+  "no_network": true,
+
+  "class_labels": {
+    "_comment": "Toy ground-truth and predicted class labels for classification metrics.",
+    "y_true": ["real", "synthetic", "tampered", "tampered", "real", "synthetic"],
+    "y_pred": ["real", "synthetic", "tampered", "real",     "real", "tampered"]
+  },
+
+  "family_labels": {
+    "_comment": "Toy ground-truth and predicted family/provenance labels.",
+    "y_true": ["Real-or-N/A", "LatDiff", "PixDiff", "GAN", "Real-or-N/A", "LatDiff"],
+    "y_pred": ["Real-or-N/A", "LatDiff", "GAN",    "GAN", "Real-or-N/A", "LatDiff"],
+    "ignore_real_or_na": true
+  },
+
+  "localization": {
+    "_comment": "Toy ground-truth class labels and matching localization head states.",
+    "gt_class_labels":    ["real",           "tampered",  "tampered",                    "synthetic",       "tampered"],
+    "localization_states":["not_applicable",  "activated", "skipped_below_threshold",     "not_applicable",  "activated"]
+  },
+
+  "masks": [
+    {
+      "_comment": "Example 1: partial overlap — IoU = 1/3",
+      "pred_mask": [[1, 0], [0, 1]],
+      "gt_mask":   [[1, 1], [0, 0]]
+    },
+    {
+      "_comment": "Example 2: perfect match — IoU = 1.0",
+      "pred_mask": [[0, 1], [1, 0]],
+      "gt_mask":   [[0, 1], [1, 0]]
+    },
+    {
+      "_comment": "Example 3: both all-zero — toy convention IoU = 1.0",
+      "pred_mask": [[0, 0], [0, 0]],
+      "gt_mask":   [[0, 0], [0, 0]]
+    }
+  ],
+
+  "latency_ms": [12.5, 14.2, 11.8, 13.6, 15.0, 10.9],
+
+  "perturbation_records": [
+    {"perturbation_tag": "jpeg",               "clean_score": 0.85, "perturbed_score": 0.78},
+    {"perturbation_tag": "resize",             "clean_score": 0.85, "perturbed_score": 0.80},
+    {"perturbation_tag": "crop",               "clean_score": 0.85, "perturbed_score": 0.75},
+    {"perturbation_tag": "screenshot",         "clean_score": 0.85, "perturbed_score": 0.70},
+    {"perturbation_tag": "text_overlay",       "clean_score": 0.85, "perturbed_score": 0.72},
+    {"perturbation_tag": "recompression_chain","clean_score": 0.85, "perturbed_score": 0.65}
+  ]
+}
