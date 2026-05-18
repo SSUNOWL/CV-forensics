@@ -1,0 +1,95 @@
+{
+  "schema_version": "0.1.0",
+  "plan_name": "cf_small_baseline_training_plan",
+  "dataset_name": "Community Forensics-Small",
+  "execution_mode": "plan_only",
+  "dry_run": true,
+  "no_download": true,
+  "no_training": true,
+  "no_network": true,
+  "no_outputs": true,
+  "no_checkpoints": true,
+  "no_real_image_reading": true,
+  "no_real_mask_reading": true,
+  "requires_user_approval_for_real_training": true,
+  "local_data_gate_ref": "configs/local_data/readiness.example.json",
+  "cf_small_subset_smoke_ref": "configs/local_data/cf_small_subset_smoke.example.json",
+  "dataset_role": {
+    "shared_backbone_planning": true,
+    "real_vs_synthetic_baseline_planning": true,
+    "coarse_provenance_family_planning": true,
+    "not_primary_tampered_localization_source": true
+  },
+  "training_objective_plan": {
+    "mode": "planning_only",
+    "primary_objective": "real-vs-synthetic baseline classification planning",
+    "secondary_objective": "coarse generator-family provenance planning",
+    "no_real_optimization": true
+  },
+  "backbone_plan": {
+    "purpose": "shared visual backbone initialization planning",
+    "candidate_backbones": ["ConvNeXt-S", "CLIP-ViT-S"],
+    "single_gpu_budget_required_before_real_training": true
+  },
+  "classification_policy": {
+    "labels": ["real", "synthetic"],
+    "task": "binary real-vs-synthetic classification",
+    "tampered_localization_required": false,
+    "notes": "CF-Small baseline planning does not treat this dataset as the tampered localization source."
+  },
+  "family_policy": {
+    "type": "coarse_generator_family_provenance",
+    "labels": ["LatDiff", "PixDiff", "GAN", "Other", "Real-or-N/A", "Unknown"],
+    "source_metadata": ["architecture", "model_name", "subset"],
+    "exact_model_attribution_required": false
+  },
+  "generator_holdout_policy": {
+    "strategy": "model_name_or_generator_family_holdout",
+    "avoid_train_validation_leakage": true,
+    "diversity_aware_split_planning": true,
+    "random_only_split_allowed": false,
+    "holdout_keys": ["model_name", "architecture"]
+  },
+  "split_policy": {
+    "mode": "symbolic_plan_only",
+    "train_split": "planned",
+    "validation_split": "planned",
+    "generator_holdout_required": true
+  },
+  "evaluation_policy": {
+    "mode": "plan_only",
+    "run_evaluation": false,
+    "requires_approved_manifest_before_execution": true
+  },
+  "metric_plan": {
+    "required_metrics": [
+      "binary accuracy",
+      "macro F1",
+      "generator-family accuracy",
+      "holdout/generalization evaluation"
+    ],
+    "later_metrics": ["latency", "FPS"],
+    "real_mask_iou_required_for_cf_small": false
+  },
+  "output_policy": {
+    "write_outputs": false,
+    "requires_explicit_approval_before_writing": true
+  },
+  "checkpoint_policy": {
+    "write_checkpoints": false,
+    "requires_explicit_approval_before_writing": true
+  },
+  "handoff_to_sid_set": {
+    "sid_set_handles_3_way_classification": true,
+    "sid_set_handles_tampered_localization": true,
+    "notes": "CF-Small prepares backbone and provenance planning; SID-Set handles real/synthetic/tampered and localization planning."
+  },
+  "validation_notes": [
+    "Validate plan structure only.",
+    "Do not download Community Forensics-Small.",
+    "Do not read images or masks.",
+    "Do not run training or evaluation.",
+    "Do not write artifacts.",
+    "SNS augmentation is out of scope."
+  ]
+}
