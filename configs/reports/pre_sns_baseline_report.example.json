@@ -1,0 +1,146 @@
+{
+  "schema_version": "0.1.0",
+  "report_name": "pre_sns_baseline_evaluation_report_scaffold",
+  "report_stage": "pre_sns_baseline",
+  "execution_mode": "report_scaffold_only",
+  "dry_run": true,
+  "no_download": true,
+  "no_training": true,
+  "no_network": true,
+  "no_outputs": true,
+  "no_checkpoints": true,
+  "no_real_evaluation": true,
+  "no_real_image_reading": true,
+  "no_real_mask_reading": true,
+  "no_sns_augmentation": true,
+  "no_sns_perturbation_eval": true,
+  "requires_user_approval_for_real_evaluation": true,
+  "local_data_gate_ref": "configs/local_data/readiness.example.json",
+  "cf_small_baseline_ref": "configs/training/cf_small_baseline.example.json",
+  "sid_set_baseline_ref": "configs/training/sid_set_multihead_baseline.example.json",
+  "report_scope": {
+    "purpose": "pre-SNS baseline comparison anchor",
+    "report_scaffold_only": true,
+    "claims_real_metric_values": false
+  },
+  "dataset_scope": {
+    "community_forensics_small_baseline_role": "shared backbone, real-vs-synthetic, and coarse generator-family planning",
+    "sid_set_baseline_role": "3-way classification, tampered localization, and evidence/reason alignment planning",
+    "real_data_access_in_this_task": false
+  },
+  "model_output_scope": {
+    "class": true,
+    "mask_localization": true,
+    "family_provenance": true,
+    "reason": true
+  },
+  "metric_fields": {
+    "three_way_accuracy": {
+      "display_name": "3-way accuracy",
+      "status": "pending_real_baseline_run",
+      "value": null,
+      "unit_or_definition": "accuracy over real, synthetic, and tampered labels",
+      "source_stage": "SID-Set baseline",
+      "required_before_sns": true
+    },
+    "macro_f1": {
+      "display_name": "Macro-F1",
+      "status": "pending_real_baseline_run",
+      "value": null,
+      "unit_or_definition": "unweighted mean F1 across target classes",
+      "source_stage": "SID-Set baseline",
+      "required_before_sns": true
+    },
+    "mask_iou": {
+      "display_name": "mask IoU",
+      "status": "pending_real_baseline_run",
+      "value": null,
+      "unit_or_definition": "intersection over union for tampered localization masks",
+      "source_stage": "SID-Set localization baseline",
+      "required_before_sns": true
+    },
+    "generator_family_accuracy": {
+      "display_name": "generator-family accuracy",
+      "status": "pending_real_baseline_run",
+      "value": null,
+      "unit_or_definition": "coarse family/provenance accuracy where labels are confirmed",
+      "source_stage": "CF-Small and SID-Set baseline handoff",
+      "required_before_sns": true
+    },
+    "localization_activation_recall": {
+      "display_name": "localization activation recall",
+      "status": "pending_real_baseline_run",
+      "value": null,
+      "unit_or_definition": "fraction of true tampered samples where localization activates",
+      "source_stage": "SID-Set localization baseline",
+      "required_before_sns": true
+    },
+    "latency": {
+      "display_name": "latency",
+      "status": "pending_real_baseline_run",
+      "value": null,
+      "unit_or_definition": "planned milliseconds per image measurement",
+      "source_stage": "baseline inference timing",
+      "required_before_sns": true
+    },
+    "fps": {
+      "display_name": "FPS",
+      "status": "pending_real_baseline_run",
+      "value": null,
+      "unit_or_definition": "planned batch-size-one frames per second measurement",
+      "source_stage": "baseline inference timing",
+      "required_before_sns": true
+    }
+  },
+  "metric_status_policy": {
+    "current_metric_status": "pending_real_baseline_run",
+    "current_metric_values_must_be_null": true,
+    "completed_real_metric_values_rejected_in_this_task": true
+  },
+  "baseline_collection_policy": {
+    "requires_explicit_user_approval_before_real_metric_collection": true,
+    "run_real_evaluation_now": false,
+    "validated_manifest_required_before_collection": true
+  },
+  "comparison_policy": {
+    "pre_sns_baseline_anchor": {
+      "status": "scaffold_ready_after_validation",
+      "description": "baseline comparison anchor for future SNS stages"
+    },
+    "future_sns_robustness_drop": {
+      "status": "pending_future_sns_stage",
+      "value": null,
+      "description": "future comparison field for clean-to-SNS metric drop"
+    },
+    "future_sns_augmented_training_comparison": {
+      "status": "pending_future_sns_stage",
+      "value": null
+    }
+  },
+  "output_policy": {
+    "write_reports": false,
+    "write_predictions": false,
+    "requires_explicit_approval_before_external_report_or_prediction_writing": true
+  },
+  "checkpoint_policy": {
+    "write_checkpoints": false,
+    "requires_explicit_approval_before_writing": true
+  },
+  "sns_future_stage_policy": {
+    "sns_augmentation_implemented_here": false,
+    "sns_perturbation_evaluation_run_here": false,
+    "sns_stage_tasks_begin_only_after_scaffold_committed_and_explicitly_approved": true,
+    "notes": [
+      "SNS augmentation is not implemented in this task.",
+      "SNS perturbation evaluation is not run in this task."
+    ]
+  },
+  "validation_notes": [
+    "Validate symbolic pre-SNS baseline report scaffold only.",
+    "Do not download datasets.",
+    "Do not run training or real evaluation.",
+    "Do not read images or masks.",
+    "Do not write reports, predictions, or checkpoints.",
+    "No real metric values are claimed."
+  ]
+}
