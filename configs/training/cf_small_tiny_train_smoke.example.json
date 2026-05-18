@@ -1,0 +1,71 @@
+{
+  "schema_version": "0.1.0",
+  "config_kind": "example_symbolic",
+  "smoke_name": "cf_small_local_tiny_training_smoke",
+  "dataset_name": "Community Forensics-Small",
+  "stage": "non_sns_cf_small_tiny_training_smoke",
+  "execution_mode": "example_only",
+  "dry_run": true,
+  "no_download": true,
+  "no_network": true,
+  "no_outputs": true,
+  "no_checkpoints": true,
+  "no_sns_augmentation": true,
+  "no_sns_perturbation_eval": true,
+  "requires_user_approval_for_real_data": true,
+  "local_config_template_path": "<UNTRACKED_CF_SMALL_TINY_TRAIN_SMOKE_LOCAL_JSON>",
+  "approved_real_mode_policy": {
+    "config_kind": "approved_local_smoke",
+    "approval_text_required": "I_APPROVE_LOCAL_NON_SNS_TINY_TRAINING_SMOKE",
+    "explicit_sample_paths_only": true,
+    "recursive_directory_scan_allowed": false,
+    "stdout_summary_only_by_default": true
+  },
+  "tiny_limits": {
+    "max_samples": 8,
+    "max_steps": 4,
+    "max_epochs": 1,
+    "max_image_size": 64,
+    "cpu_only": true
+  },
+  "class_policy": {
+    "task": "binary real-vs-synthetic classification",
+    "labels": ["real", "synthetic"]
+  },
+  "sample_manifest_policy": {
+    "explicit_listed_sample_paths_required": true,
+    "recursive_directory_scan_allowed": false,
+    "directory_entries_allowed": false,
+    "both_classes_required_for_approved_local_smoke": true
+  },
+  "training_smoke_policy": {
+    "purpose": "verify loader, forward/backward, finite loss, and metric plumbing only",
+    "not_full_training": true,
+    "not_performance_claim": true,
+    "cpu_only": true
+  },
+  "metric_policy": {
+    "planned_smoke_metrics": ["finite_loss", "smoke_accuracy"],
+    "final_baseline_metric_claim": false
+  },
+  "output_policy": {
+    "stdout_summary_only_by_default": true,
+    "write_outputs": false
+  },
+  "checkpoint_policy": {
+    "write_checkpoints": false
+  },
+  "next_stage_policy": {
+    "sid_set_tiny_multihead_smoke_later": true,
+    "full_baseline_training_requires_later_explicit_approval": true,
+    "sns_augmentation_later_only": true
+  },
+  "validation_notes": [
+    "Tracked example is symbolic only.",
+    "Actual local smoke requires an untracked local config with explicit approval.",
+    "Do not download data.",
+    "Do not run full training.",
+    "Do not write outputs or checkpoints.",
+    "SNS augmentation is out of scope."
+  ]
+}

@@ -20,6 +20,11 @@ mlruns/
 # local AI-agent settings
 .claude/settings.local.json
 
+# local real-data configs
+.local/
+*.local.json
+configs/**/*.local.json
+
 # python
 .venv/
 venv/
