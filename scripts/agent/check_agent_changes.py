@@ -29,7 +29,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-_ALLOWED_SECTION = "## Files Claude May Modify"
+_ALLOWED_SECTIONS = (
+    "## Files Claude May Modify",
+    "## Files Codex May Modify",
+)
 
 # ---------------------------------------------------------------------------
 # Safe validation command classification
@@ -141,13 +144,10 @@ def _read_task(task_file: str) -> str:
         return f.read()
 
 
-def parse_allowed_files(content: str):
-    """Return list of allowed file paths from '## Files Claude May Modify' section.
-
-    Returns None if the section is not found.
-    """
+def _parse_allowed_files_section(content: str, section_header: str):
+    """Return allowed file paths from a single allowed-file section."""
     match = re.search(
-        r"## Files Claude May Modify\s*\n(.*?)(?=\n## |\Z)",
+        rf"{re.escape(section_header)}\s*\n(.*?)(?=\n## |\Z)",
         content,
         re.DOTALL,
     )
@@ -162,6 +162,28 @@ def parse_allowed_files(content: str):
             file_path = m.group(1)
             if file_path:
                 allowed.append(file_path)
+    return allowed
+
+
+def parse_allowed_files(content: str):
+    """Return allowed file paths from Claude and/or Codex allowed sections.
+
+    Returns None if the section is not found.
+    """
+    found_any = False
+    allowed = []
+    seen = set()
+    for section_header in _ALLOWED_SECTIONS:
+        section_allowed = _parse_allowed_files_section(content, section_header)
+        if section_allowed is None:
+            continue
+        found_any = True
+        for file_path in section_allowed:
+            if file_path not in seen:
+                allowed.append(file_path)
+                seen.add(file_path)
+    if not found_any:
+        return None
     return allowed
 
 
@@ -321,8 +343,9 @@ def main() -> None:
     # --- Changed-file check mode ---
     allowed = parse_allowed_files(content)
     if allowed is None:
+        accepted_sections = " or ".join(repr(s) for s in _ALLOWED_SECTIONS)
         print(
-            f"ERROR: Section '{_ALLOWED_SECTION}' not found in task file.",
+            f"ERROR: Expected section {accepted_sections} not found in task file.",
             file=sys.stderr,
         )
         sys.exit(2)

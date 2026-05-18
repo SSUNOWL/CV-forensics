@@ -61,8 +61,8 @@ def _write_file(repo: str, rel_path: str, content: str = "change\n") -> None:
         f.write(content)
 
 
-def _task_content(allowed: list, validation_cmds: list = None) -> str:
-    lines = ["# Test Task\n", "## Files Claude May Modify\n\n"]
+def _task_content_with_section(allowed: list, section: str, validation_cmds: list = None) -> str:
+    lines = ["# Test Task\n", f"{section}\n\n"]
     for f in allowed:
         lines.append(f"- `{f}`\n")
     lines.append("\n")
@@ -71,6 +71,14 @@ def _task_content(allowed: list, validation_cmds: list = None) -> str:
         lines.extend(cmd + "\n" for cmd in validation_cmds)
         lines.append("```\n")
     return "".join(lines)
+
+
+def _task_content(allowed: list, validation_cmds: list = None) -> str:
+    return _task_content_with_section(
+        allowed,
+        "## Files Claude May Modify",
+        validation_cmds=validation_cmds,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -91,6 +99,38 @@ def test_parse_allowed_files_basic():
     assert len(allowed) == 2
 
 
+def test_parse_allowed_files_codex_section_only():
+    content = (
+        "## Files Codex May Modify\n\n"
+        "- `scripts/foo.py`\n"
+        "- `docs/bar.md`\n"
+    )
+    allowed = cac.parse_allowed_files(content)
+    assert allowed is not None
+    assert allowed == ["scripts/foo.py", "docs/bar.md"]
+
+
+def test_parse_allowed_files_claude_section_only_still_supported():
+    content = _task_content(["scripts/foo.py", "docs/bar.md"])
+    allowed = cac.parse_allowed_files(content)
+    assert allowed is not None
+    assert allowed == ["scripts/foo.py", "docs/bar.md"]
+
+
+def test_parse_allowed_files_both_sections_union_without_duplicates():
+    content = (
+        "## Files Codex May Modify\n\n"
+        "- `scripts/codex.py`\n"
+        "- `shared.py`\n\n"
+        "## Files Claude May Modify\n\n"
+        "- `scripts/claude.py`\n"
+        "- `shared.py`\n"
+    )
+    allowed = cac.parse_allowed_files(content)
+    assert allowed is not None
+    assert allowed == ["scripts/claude.py", "shared.py", "scripts/codex.py"]
+
+
 def test_parse_allowed_files_double_quoted():
     content = (
         "## Files Claude May Modify\n\n"
@@ -105,6 +145,12 @@ def test_parse_allowed_files_double_quoted():
 
 def test_parse_allowed_files_no_section():
     content = "# Task\n\nNo allowed section here.\n"
+    result = cac.parse_allowed_files(content)
+    assert result is None
+
+
+def test_parse_allowed_files_missing_both_sections_fails():
+    content = "## Files Humans May Modify\n\n- `nope.py`\n"
     result = cac.parse_allowed_files(content)
     assert result is None
 
@@ -523,8 +569,12 @@ def test_safe_cmd_rejects_test_dotenv():
 if __name__ == "__main__":
     unit_tests = [
         test_parse_allowed_files_basic,
+        test_parse_allowed_files_codex_section_only,
+        test_parse_allowed_files_claude_section_only_still_supported,
+        test_parse_allowed_files_both_sections_union_without_duplicates,
         test_parse_allowed_files_double_quoted,
         test_parse_allowed_files_no_section,
+        test_parse_allowed_files_missing_both_sections_fails,
         test_parse_allowed_files_empty_section,
         test_parse_allowed_files_ignores_prose,
         test_parse_validation_commands_basic,
