@@ -1,0 +1,44 @@
+{
+  "schema_version": "1.0",
+  "config_kind": "example_symbolic",
+  "preflight_name": "pre_sns_training_preflight_example",
+  "execution_mode": "example_only",
+  "no_download": true,
+  "no_network": true,
+  "no_outputs": true,
+  "no_checkpoints": true,
+  "no_real_training": true,
+  "no_sns_augmentation": true,
+  "expected_manifest_schema": {
+    "manifest_kind": "pre_sns_unified_dataset_manifest",
+    "required_sample_fields": [
+      "source_dataset",
+      "sample_id",
+      "image_path",
+      "class_label",
+      "tasks_available",
+      "loss_routing"
+    ],
+    "required_supervision": [
+      "class",
+      "family",
+      "localization"
+    ]
+  },
+  "tiny_preflight_limits": {
+    "max_samples": 6,
+    "max_image_size": 32,
+    "cpu_only": true,
+    "dry_run_optimizer_step": false
+  },
+  "loss_routing_policy": {
+    "class_loss": "all manifest samples with class supervision",
+    "family_loss": "samples with family/provenance supervision",
+    "localization_loss": "tampered samples with mask supervision"
+  },
+  "validation_notes": [
+    "Tracked example is symbolic and safe to commit.",
+    "No outputs, checkpoints, SNS augmentation, or real training are allowed.",
+    "PRE_SNS_TRAINING_PREFLIGHT_OK"
+  ]
+}
