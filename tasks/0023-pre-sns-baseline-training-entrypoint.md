@@ -22,7 +22,8 @@ Codex is the implementation worker in Codex-only mode. Codex must implement only
 - src/cv_forensics/local_data_gate.py
 - tasks/0023-pre-sns-baseline-training-entrypoint.md
 
-## Files Codex may modify
+## Files Codex May Modify
+- tasks/0023-pre-sns-baseline-training-entrypoint.md
 - configs/training/pre_sns_baseline_train.example.json
 - scripts/agent/validate_pre_sns_baseline_train_config.py
 - scripts/training/train_pre_sns_baseline.py
