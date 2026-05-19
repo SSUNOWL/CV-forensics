@@ -1,0 +1,80 @@
+{
+  "schema_version": "1.0",
+  "config_kind": "example_symbolic",
+  "smoke_name": "pre_sns_integrated_smoke_example",
+  "dataset_name": "pre-SNS integrated smoke",
+  "stage": "non_sns_pre_sns_integrated_model_smoke",
+  "execution_mode": "example_only",
+  "dry_run": true,
+  "no_download": true,
+  "no_network": true,
+  "no_outputs": true,
+  "no_checkpoints": true,
+  "no_sns_augmentation": true,
+  "no_sns_perturbation_eval": true,
+  "requires_user_approval_for_real_data": true,
+  "class_policy": {
+    "labels": [
+      "real",
+      "full_synthetic",
+      "tampered"
+    ],
+    "schema_mapping": {
+      "full_synthetic": "synthetic"
+    }
+  },
+  "family_policy": {
+    "labels": [
+      "LatDiff",
+      "PixDiff",
+      "GAN",
+      "Other",
+      "Real-or-N/A"
+    ],
+    "loss_applies_only_when_family_label_present": true,
+    "missing_family_label_policy": "skip family loss for that sample"
+  },
+  "localization_policy": {
+    "loss_applies_only_to_tampered_samples_with_masks": true,
+    "non_tampered_mask_policy": "not_applicable",
+    "threshold_tau": 0.5
+  },
+  "loss_routing_policy": {
+    "class_loss": "all samples with class labels",
+    "family_loss": "only samples with family labels",
+    "localization_loss": "only tampered samples with masks",
+    "total_loss": "class_loss + family_loss_weight * family_loss + localization_loss_weight * localization_loss"
+  },
+  "tiny_limits": {
+    "max_samples": 9,
+    "max_steps": 3,
+    "max_epochs": 1,
+    "max_image_size": 32,
+    "cpu_only": true
+  },
+  "sample_manifest_policy": {
+    "mode": "symbolic_only_until_approved",
+    "requires_explicit_listed_image_paths": true,
+    "requires_explicit_listed_mask_paths_for_tampered": true,
+    "recursive_directory_scans_allowed": false,
+    "family_label_optional_per_sample": true
+  },
+  "training_smoke_policy": {
+    "model": "tiny shared backbone with class, family, localization, and evidence summary outputs",
+    "family_loss_weight": 1.0,
+    "localization_loss_weight": 1.0,
+    "purpose": "verify finite routed losses and schema-compatible output summary"
+  },
+  "output_policy": {
+    "stdout_json_summary_only": true,
+    "write_outputs": false
+  },
+  "checkpoint_policy": {
+    "write_checkpoints": false
+  },
+  "validation_notes": [
+    "Tracked example is symbolic and safe to commit.",
+    "SNS augmentation is not implemented here.",
+    "PRE_SNS_INTEGRATED_SMOKE_OK"
+  ]
+}
