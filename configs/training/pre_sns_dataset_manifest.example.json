@@ -1,0 +1,75 @@
+{
+  "schema_version": "1.0",
+  "config_kind": "example_symbolic",
+  "manifest_name": "pre_sns_dataset_manifest_example",
+  "execution_mode": "example_only",
+  "no_download": true,
+  "no_network": true,
+  "no_training": true,
+  "no_outputs": true,
+  "no_checkpoints": true,
+  "no_sns_augmentation": true,
+  "class_policy": {
+    "labels": [
+      "real",
+      "full_synthetic",
+      "tampered"
+    ]
+  },
+  "family_policy": {
+    "labels": [
+      "LatDiff",
+      "PixDiff",
+      "GAN",
+      "Other",
+      "Real-or-N/A"
+    ],
+    "cf_small_family_required": true,
+    "sid_set_family_optional": true
+  },
+  "source_dataset_policy": {
+    "supported_sources": [
+      "community_forensics_small",
+      "sid_set"
+    ],
+    "cf_small_preserved_fields": [
+      "sample_id",
+      "image_path",
+      "class_label",
+      "family_label",
+      "architecture",
+      "model_name",
+      "subset"
+    ],
+    "sid_set_preserved_fields": [
+      "sample_id",
+      "image_path",
+      "class_label",
+      "label_id",
+      "mask_path",
+      "split",
+      "img_id"
+    ]
+  },
+  "loss_routing_policy": {
+    "class_loss": "all samples with class labels",
+    "family_loss": "CF-Small samples with family labels",
+    "localization_loss": "SID-Set tampered samples with masks"
+  },
+  "sample_manifest_policy": {
+    "mode": "symbolic_only_until_approved",
+    "requires_explicit_listed_image_paths": true,
+    "requires_explicit_listed_mask_paths_for_tampered": true,
+    "recursive_directory_scans_allowed": false
+  },
+  "output_policy": {
+    "example_writes_manifest": false,
+    "approved_mode_output_must_be_explicit": true,
+    "tracked_prediction_or_weight_artifacts_forbidden": true
+  },
+  "validation_notes": [
+    "Tracked example is symbolic and safe to commit.",
+    "Approved local mode requires I_APPROVE_LOCAL_NON_SNS_PRE_SNS_DATASET_MANIFEST.",
+    "PRE_SNS_DATASET_MANIFEST_OK"
+  ]
+}
