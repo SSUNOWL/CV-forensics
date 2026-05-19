@@ -1,0 +1,90 @@
+{
+  "schema_version": "1.0",
+  "config_kind": "example_symbolic",
+  "smoke_name": "cf_small_multihead_provenance_tiny_smoke_example",
+  "dataset_name": "Community Forensics-Small",
+  "stage": "non_sns_cf_small_multihead_provenance_tiny_smoke",
+  "execution_mode": "example_only",
+  "dry_run": true,
+  "no_download": true,
+  "no_network": true,
+  "no_outputs": true,
+  "no_checkpoints": true,
+  "no_sns_augmentation": true,
+  "no_sns_perturbation_eval": true,
+  "requires_user_approval_for_real_data": true,
+  "class_policy": {
+    "labels": [
+      "real",
+      "synthetic"
+    ],
+    "task": "binary real-vs-synthetic classification smoke"
+  },
+  "family_policy": {
+    "labels": [
+      "LatDiff",
+      "PixDiff",
+      "GAN",
+      "Other",
+      "Real-or-N/A"
+    ],
+    "real_sample_family_label": "Real-or-N/A",
+    "synthetic_family_source": "architecture metadata",
+    "provenance_scope": "coarse generator-family provenance, not exact model attribution",
+    "preserve_metadata_when_available": [
+      "model_name",
+      "subset"
+    ]
+  },
+  "tiny_limits": {
+    "max_samples": 8,
+    "max_steps": 3,
+    "max_epochs": 1,
+    "max_image_size": 32,
+    "cpu_only": true
+  },
+  "sample_manifest_policy": {
+    "mode": "symbolic_only_until_approved",
+    "requires_explicit_listed_image_paths": true,
+    "recursive_directory_scans_allowed": false,
+    "required_fields_for_approved_local_mode": [
+      "sample_id",
+      "image_path",
+      "label",
+      "architecture",
+      "family_label"
+    ],
+    "optional_metadata_to_preserve": [
+      "model_name",
+      "subset"
+    ]
+  },
+  "training_smoke_policy": {
+    "model": "tiny shared feature extractor with binary class head and family provenance head",
+    "losses": [
+      "class_cross_entropy",
+      "family_cross_entropy"
+    ],
+    "family_loss_weight": 1.0,
+    "purpose": "verify finite class, family, and total losses for a tiny smoke only"
+  },
+  "output_policy": {
+    "stdout_json_summary_only": true,
+    "write_outputs": false,
+    "requires_explicit_user_approval_before_outputs": true
+  },
+  "checkpoint_policy": {
+    "write_checkpoints": false,
+    "requires_explicit_user_approval_before_checkpoints": true
+  },
+  "next_stage_policy": {
+    "sid_set_3way_and_localization_smoke": "later explicit-approval task",
+    "full_baseline_training": "later explicit-approval task",
+    "sns_augmentation": "not implemented here"
+  },
+  "validation_notes": [
+    "Tracked example is symbolic and safe to commit.",
+    "Future local execution requires approved_local_multihead_smoke config_kind and explicit user approval text.",
+    "CF_SMALL_MULTIHEAD_TINY_SMOKE_OK"
+  ]
+}
