@@ -1,0 +1,47 @@
+{
+  "schema_version": "1.0",
+  "config_kind": "example_symbolic",
+  "train_name": "pre_sns_baseline_training_entrypoint_example",
+  "execution_mode": "example_only",
+  "approved_training_run": false,
+  "required_approval_text": "I_APPROVE_PRE_SNS_BASELINE_TRAINING",
+  "user_approval_text": "",
+  "no_write_dry_run": true,
+  "no_download": true,
+  "no_network": true,
+  "no_sns_augmentation": true,
+  "unified_manifest_path": "symbolic approved local unified manifest path",
+  "approved_run_root": "symbolic approved local run root outside repository",
+  "approved_checkpoint_root": "symbolic approved local weight root outside repository",
+  "device": "cpu",
+  "batch_size": 2,
+  "epochs": 1,
+  "max_samples": 12,
+  "seed": 23,
+  "class_loss_weight": 1.0,
+  "family_loss_weight": 1.0,
+  "localization_loss_weight": 1.0,
+  "local_path_policy": {
+    "approved_mode_requires_explicit_local_roots": true,
+    "unified_manifest_must_be_under_approved_local_roots": true,
+    "recursive_directory_scans_allowed": false
+  },
+  "artifact_policy": {
+    "approved_run_root_must_be_outside_repository": true,
+    "approved_checkpoint_root_must_be_outside_repository": true,
+    "repo_named_output_or_weight_dirs_forbidden": true,
+    "writes_allowed_only_after_explicit_training_approval": true
+  },
+  "training_policy": {
+    "refuse_without_approval": true,
+    "approval_text": "I_APPROVE_PRE_SNS_BASELINE_TRAINING",
+    "reads_only_explicit_manifest_paths": true,
+    "actual_training_is_manual_after_task_pass": true
+  },
+  "validation_notes": [
+    "Tracked example is symbolic and safe to commit.",
+    "Approved local training requires I_APPROVE_PRE_SNS_BASELINE_TRAINING.",
+    "SNS augmentation is not part of this task.",
+    "PRE_SNS_BASELINE_TRAINING_ENTRYPOINT_OK"
+  ]
+}
