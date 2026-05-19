@@ -1,0 +1,93 @@
+{
+  "schema_version": "1.0",
+  "config_kind": "example_symbolic",
+  "smoke_name": "sid_set_tiny_localization_smoke_example",
+  "dataset_name": "SID-Set",
+  "stage": "non_sns_sid_set_tiny_localization_smoke",
+  "execution_mode": "example_only",
+  "dry_run": true,
+  "no_download": true,
+  "no_network": true,
+  "no_outputs": true,
+  "no_checkpoints": true,
+  "no_sns_augmentation": true,
+  "no_sns_perturbation_eval": true,
+  "requires_user_approval_for_real_data": true,
+  "class_policy": {
+    "labels": [
+      "real",
+      "full_synthetic",
+      "tampered"
+    ],
+    "label_id_map": {
+      "0": "real",
+      "1": "full_synthetic",
+      "2": "tampered"
+    },
+    "task": "tiny 3-way classification smoke"
+  },
+  "mask_policy": {
+    "tampered_samples_require_masks": true,
+    "real_samples_require_masks": false,
+    "full_synthetic_samples_require_masks": false,
+    "mask_path_allowed_only_for_tampered": true,
+    "localization_output_for_non_tampered": "not_applicable",
+    "no_real_mask_reading_in_example": true
+  },
+  "family_policy": {
+    "sid_set_family_labels_required": false,
+    "family_loss_applied_to_sid_set_samples": false,
+    "reason": "SID-Set samples may not include Community Forensics-Small-style family labels."
+  },
+  "tiny_limits": {
+    "max_samples": 9,
+    "max_steps": 3,
+    "max_epochs": 1,
+    "max_image_size": 32,
+    "cpu_only": true
+  },
+  "sample_manifest_policy": {
+    "mode": "symbolic_only_until_approved",
+    "requires_explicit_listed_image_paths": true,
+    "requires_explicit_listed_mask_paths_for_tampered": true,
+    "recursive_directory_scans_allowed": false,
+    "required_fields_for_approved_local_mode": [
+      "sample_id",
+      "image_path",
+      "label",
+      "label_id"
+    ],
+    "optional_metadata_to_preserve": [
+      "split",
+      "img_id"
+    ]
+  },
+  "training_smoke_policy": {
+    "model": "tiny shared feature extractor with 3-way class head and localization head",
+    "losses": [
+      "class_cross_entropy",
+      "conditional_tampered_mask_binary_loss"
+    ],
+    "mask_loss_weight": 1.0,
+    "purpose": "verify finite class, mask, and total losses for a tiny smoke only"
+  },
+  "output_policy": {
+    "stdout_json_summary_only": true,
+    "write_outputs": false,
+    "requires_explicit_user_approval_before_outputs": true
+  },
+  "checkpoint_policy": {
+    "write_checkpoints": false,
+    "requires_explicit_user_approval_before_checkpoints": true
+  },
+  "next_stage_policy": {
+    "pre_sns_integrated_model": "later explicit-approval task combining CF-Small provenance and SID-Set localization",
+    "full_baseline_training": "later explicit-approval task",
+    "sns_augmentation": "not implemented here"
+  },
+  "validation_notes": [
+    "Tracked example is symbolic and safe to commit.",
+    "Future local execution requires approved_local_sid_tiny_localization_smoke config_kind and explicit user approval text.",
+    "SID_SET_TINY_LOCALIZATION_SMOKE_OK"
+  ]
+}
