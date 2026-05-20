@@ -31,6 +31,11 @@ from scripts.data.build_pre_sns_dataset_manifest import main as builder_main  # 
 
 
 EXAMPLE_CONFIG = REPO_ROOT / "configs" / "training" / "pre_sns_dataset_manifest.example.json"
+TEMP_ROOT = Path.home() / ".codex" / "memories"
+
+
+def temporary_local_root():
+    return tempfile.TemporaryDirectory(dir=str(TEMP_ROOT))
 
 
 def assert_pass(raw: dict) -> None:
@@ -101,6 +106,34 @@ def make_approved(root: str, output_root: str) -> dict:
     }
 
 
+def touch_sample_files(root: str) -> None:
+    for name in (
+        "cf_real_001.png",
+        "cf_syn_001.png",
+        "sid_tampered_001.png",
+        "sid_tampered_001_mask.png",
+    ):
+        with open(os.path.join(root, name), "wb") as handle:
+            handle.write(b"tiny fixture")
+
+
+def as_sample_manifest(raw: dict) -> dict:
+    changed = copy.deepcopy(raw)
+    changed["sample_manifest"] = changed.pop("samples")
+    return changed
+
+
+def with_local_manifest_aliases(raw: dict) -> dict:
+    changed = as_sample_manifest(raw)
+    for sample in changed["sample_manifest"]:
+        if sample["source_dataset"] == "community_forensics_small":
+            sample["source_dataset"] = "Community Forensics-Small"
+        elif sample["source_dataset"] == "sid_set":
+            sample["source_dataset"] = "SID-Set"
+        sample["label"] = sample.pop("class_label")
+    return changed
+
+
 def mutate(raw: dict, mutator) -> dict:
     changed = copy.deepcopy(raw)
     mutator(changed)
@@ -112,7 +145,8 @@ def test_example_config_passes() -> None:
 
 
 def test_approved_config_passes_and_normalizes() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
+    with temporary_local_root() as tmp:
+        touch_sample_files(tmp)
         output_root = os.path.join(tmp, "manifest_out")
         raw = make_approved(tmp, output_root)
         assert_pass(raw)
@@ -122,17 +156,34 @@ def test_approved_config_passes_and_normalizes() -> None:
         assert manifest["summary"]["localization_supervision_count"] == 1
 
 
+def test_sample_manifest_absolute_paths_pass() -> None:
+    with temporary_local_root() as tmp:
+        touch_sample_files(tmp)
+        output_root = os.path.join(tmp, "manifest_out")
+        raw = with_local_manifest_aliases(make_approved(tmp, output_root))
+        assert_pass(raw)
+
+
 def test_rejections() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
+    with temporary_local_root() as tmp:
+        touch_sample_files(tmp)
         output_root = os.path.join(tmp, "manifest_out")
         base = make_approved(tmp, output_root)
+        outside = tempfile.TemporaryDirectory(dir=str(TEMP_ROOT))
+        outside_path = outside.name
+        with open(os.path.join(outside_path, "outside.png"), "wb") as handle:
+            handle.write(b"outside")
         cases = [
             (lambda raw: raw.update({"user_approval_text": "no"}), "user_approval_text"),
             (lambda raw: raw["samples"][0].update({"image_path": "https://example.invalid/a.png"}), "URL"),
             (lambda raw: raw["samples"][0].update({"image_path": str(REPO_ROOT / "data" / "x.png")}), "protected"),
             (lambda raw: raw["samples"][0].update({"image_path": os.path.join(tmp, "..", "x.png")}), "path traversal"),
+            (lambda raw: raw["samples"][0].update({"image_path": os.path.join(outside_path, "outside.png")}), "under approved roots"),
+            (lambda raw: raw["samples"][2].update({"mask_path": os.path.join(outside_path, "outside.png")}), "under approved roots"),
+            (lambda raw: raw["samples"][0].update({"image_path": tmp}), "must exist as a file"),
             (lambda raw: raw["samples"][1].update({"family_label": "ExactModel"}), "family_label"),
             (lambda raw: [sample.update({"class_label": "real"}) for sample in raw["samples"] if sample["class_label"] == "tampered"], "missing required class coverage: tampered"),
+            (lambda raw: raw["samples"][2].update({"class_label": "real", "label_id": 0}), "non-tampered SID-Set sample must not include mask_path"),
             (lambda raw: raw["samples"][2].pop("mask_path"), "tampered SID-Set sample requires mask_path"),
             (lambda raw: raw.update({"manifest_output_path": str(REPO_ROOT / "outputs" / "manifest.json")}), "protected"),
             (lambda raw: raw.update({"no_download": False}), "no_download must be true"),
@@ -141,10 +192,12 @@ def test_rejections() -> None:
         ]
         for mutator, expected in cases:
             assert_fail(mutate(base, mutator), expected)
+        outside.cleanup()
 
 
 def test_builder_writes_only_approved_temp_manifest() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
+    with temporary_local_root() as tmp:
+        touch_sample_files(tmp)
         output_root = os.path.join(tmp, "manifest_out")
         raw = make_approved(tmp, output_root)
         config_path = os.path.join(tmp, "approved.local.json")
@@ -169,6 +222,7 @@ def main() -> int:
     tests = [
         test_example_config_passes,
         test_approved_config_passes_and_normalizes,
+        test_sample_manifest_absolute_paths_pass,
         test_rejections,
         test_builder_writes_only_approved_temp_manifest,
     ]

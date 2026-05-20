@@ -14,6 +14,10 @@ SID-Set records preserve `sample_id`, `image_path`, `class_label`, `label_id`, o
 
 The generated unified manifest adds `tasks_available` and `loss_routing` fields so later training can route class, family, and localization losses without guessing from dataset names.
 
+In approved local mode, sample `image_path` values and tampered SID-Set `mask_path` values must be explicit absolute file paths under `approved_local_roots`. The validator checks these sample paths through the explicit local file checker and confirms that they exist as files. Directory-only paths, paths outside the approved roots, URL or remote-scheme paths, Windows drive paths, traversal paths, and protected path segments remain rejected.
+
+Generic recursive safety checks still apply to all other config fields. Only approved sample file path values are exempt from generic absolute-path rejection, and they are still subject to the stricter explicit file validation.
+
 This remains a pre-training gate. It does not download datasets, train models, scan directories, read images, read masks, write outputs or checkpoints, implement SNS augmentation, or run SNS perturbation evaluation.
 
 Marker: PRE_SNS_DATASET_MANIFEST_OK

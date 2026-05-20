@@ -27,6 +27,13 @@ from cv_forensics.pre_sns_manifest import (  # noqa: E402
 OK_MARKER = "PRE_SNS_DATASET_MANIFEST_OK"
 APPROVAL_TEXT = "I_APPROVE_LOCAL_NON_SNS_PRE_SNS_DATASET_MANIFEST"
 CONFIG_KINDS = {"example_symbolic", "approved_local_pre_sns_manifest"}
+SOURCE_DATASET_ALIASES = {
+    "Community Forensics-Small": "community_forensics_small",
+    "CF-Small": "community_forensics_small",
+    "community_forensics_small": "community_forensics_small",
+    "SID-Set": "sid_set",
+    "sid_set": "sid_set",
+}
 GUARDRAIL_FLAGS = (
     "no_download",
     "no_network",
@@ -100,6 +107,41 @@ def _path_is_under(path: str, roots: list[str]) -> bool:
     return False
 
 
+def _sample_list(raw: dict[str, Any], errors: list[str]) -> tuple[list[dict[str, Any]], str]:
+    samples = raw.get("samples")
+    sample_manifest = raw.get("sample_manifest")
+    if samples is not None and sample_manifest is not None:
+        errors.append(_err("use only one of samples or sample_manifest"))
+        return [], "samples"
+    key = "sample_manifest" if sample_manifest is not None else "samples"
+    selected = sample_manifest if sample_manifest is not None else samples
+    if not isinstance(selected, list) or not selected:
+        errors.append(_err(f"{key} must be a non-empty list"))
+        return [], key
+    typed_samples: list[dict[str, Any]] = []
+    for index, sample in enumerate(selected):
+        if not isinstance(sample, dict):
+            errors.append(_err(f"{key}[{index}] must be an object"))
+            continue
+        typed_samples.append(sample)
+    return typed_samples, key
+
+
+def _validate_existing_sample_file(path_value: str, path_name: str, errors: list[str]) -> None:
+    if not os.path.isfile(path_value):
+        errors.append(_err(f"{path_name}: must exist as a file"))
+
+
+def _normalize_sample_for_validation(sample: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(sample)
+    source_value = normalized.get("source_dataset", normalized.get("dataset"))
+    if isinstance(source_value, str) and source_value in SOURCE_DATASET_ALIASES:
+        normalized["source_dataset"] = SOURCE_DATASET_ALIASES[source_value]
+    if "class_label" not in normalized and isinstance(normalized.get("label"), str):
+        normalized["class_label"] = normalized["label"]
+    return normalized
+
+
 def _validate_roots(raw: dict[str, Any], errors: list[str]) -> tuple[list[str], list[str]]:
     roots = raw.get("approved_local_roots")
     output_roots = raw.get("approved_local_output_roots", [])
@@ -119,47 +161,49 @@ def _validate_roots(raw: dict[str, Any], errors: list[str]) -> tuple[list[str], 
 
 
 def _validate_samples(raw: dict[str, Any], roots: list[str], output_roots: list[str], errors: list[str]) -> list[dict[str, Any]]:
-    samples = raw.get("samples")
-    if not isinstance(samples, list) or not samples:
-        errors.append(_err("samples must be a non-empty list"))
+    samples, sample_key = _sample_list(raw, errors)
+    if not samples:
         return []
     allowed_abs = set(roots) | set(output_roots)
     if isinstance(raw.get("manifest_output_path"), str):
         allowed_abs.add(raw["manifest_output_path"])
     for sample in samples:
-        if isinstance(sample, dict):
-            for field in ("image_path", "mask_path"):
-                if isinstance(sample.get(field), str):
-                    allowed_abs.add(sample[field])
+        for field in ("image_path", "mask_path"):
+            if isinstance(sample.get(field), str):
+                allowed_abs.add(sample[field])
     for issue in walk_safety(raw, allowed_abs_values=allowed_abs):
         errors.append(_err(f"{issue.path}: {issue.message}"))
     seen_classes: set[str] = set()
     seen_sources: set[str] = set()
+    normalized_samples: list[dict[str, Any]] = []
     for index, sample in enumerate(samples):
-        if not isinstance(sample, dict):
-            errors.append(_err(f"samples[{index}] must be an object"))
-            continue
-        for issue in validate_sample(sample, index):
+        normalized_sample = _normalize_sample_for_validation(sample)
+        normalized_samples.append(normalized_sample)
+        for issue in validate_sample(normalized_sample, index):
             errors.append(_err(f"{issue.path}: {issue.message}"))
         image_path = sample.get("image_path")
         if isinstance(image_path, str):
-            for issue in validate_explicit_local_file(image_path, roots, f"samples[{index}].image_path"):
+            path_name = f"{sample_key}[{index}].image_path"
+            for issue in validate_explicit_local_file(image_path, roots, path_name):
                 errors.append(_err(f"{issue.path}: {issue.message}"))
+            _validate_existing_sample_file(image_path, path_name, errors)
         mask_path = sample.get("mask_path")
         if isinstance(mask_path, str):
-            for issue in validate_explicit_local_file(mask_path, roots, f"samples[{index}].mask_path"):
+            path_name = f"{sample_key}[{index}].mask_path"
+            for issue in validate_explicit_local_file(mask_path, roots, path_name):
                 errors.append(_err(f"{issue.path}: {issue.message}"))
-        if sample.get("class_label") in CLASS_LABELS:
-            seen_classes.add(sample["class_label"])
-        if sample.get("source_dataset") in SOURCE_DATASETS:
-            seen_sources.add(sample["source_dataset"])
+            _validate_existing_sample_file(mask_path, path_name, errors)
+        if normalized_sample.get("class_label") in CLASS_LABELS:
+            seen_classes.add(normalized_sample["class_label"])
+        if normalized_sample.get("source_dataset") in SOURCE_DATASETS:
+            seen_sources.add(normalized_sample["source_dataset"])
     for label in sorted(set(CLASS_LABELS) - seen_classes):
         errors.append(_err(f"missing required class coverage: {label}"))
     for source in sorted(set(SOURCE_DATASETS) - seen_sources):
         errors.append(_err(f"missing required source coverage: {source}"))
     if not errors:
         try:
-            normalize_manifest(samples)
+            normalize_manifest(normalized_samples)
         except Exception as exc:
             errors.append(_err(f"manifest normalization failed: {exc}"))
     return samples
