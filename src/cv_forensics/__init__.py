@@ -16,6 +16,7 @@ from . import metrics
 from . import training_dry_run
 from . import local_data_gate
 from . import pre_sns_integrated_model
+from . import pre_sns_training_artifacts
 from .inference_stub import check_fake_input_config_safety
 from .metrics import check_toy_metric_config_safety
 
@@ -38,4 +39,5 @@ __all__ = [
     "training_dry_run",
     "local_data_gate",
     "pre_sns_integrated_model",
+    "pre_sns_training_artifacts",
 ]

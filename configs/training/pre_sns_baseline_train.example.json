@@ -17,10 +17,12 @@
   "batch_size": 2,
   "epochs": 1,
   "max_samples": 12,
+  "max_image_size": 64,
   "seed": 23,
   "class_loss_weight": 1.0,
   "family_loss_weight": 1.0,
   "localization_loss_weight": 1.0,
+  "overwrite_artifact_roots": false,
   "local_path_policy": {
     "approved_mode_requires_explicit_local_roots": true,
     "unified_manifest_must_be_under_approved_local_roots": true,
@@ -30,6 +32,8 @@
     "approved_run_root_must_be_outside_repository": true,
     "approved_checkpoint_root_must_be_outside_repository": true,
     "repo_named_output_or_weight_dirs_forbidden": true,
+    "default_run_root_parent": "~/cvf_runs",
+    "default_checkpoint_root_parent": "~/cvf_checkpoints",
     "writes_allowed_only_after_explicit_training_approval": true
   },
   "training_policy": {
@@ -42,6 +46,7 @@
     "Tracked example is symbolic and safe to commit.",
     "Approved local training requires I_APPROVE_PRE_SNS_BASELINE_TRAINING.",
     "SNS augmentation is not part of this task.",
-    "PRE_SNS_BASELINE_TRAINING_ENTRYPOINT_OK"
+    "PRE_SNS_BASELINE_TRAINING_ENTRYPOINT_OK",
+    "PRE_SNS_TRAINING_ARTIFACTS_OK"
   ]
 }
