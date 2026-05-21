@@ -23,6 +23,7 @@ from .model_output_schema import (
     SCHEMA_VERSION,
 )
 from .pre_sns_integrated_model import CLASS_LABELS, FAMILY_SMOKE_LABELS, build_tiny_integrated_model, schema_class_label
+from .pre_sns_visualization import write_visual_artifacts
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MARKER = "PRE_SNS_SINGLE_IMAGE_REPORT_OK"
@@ -323,6 +324,8 @@ def _validate_common(raw: dict[str, Any], errors: list[str]) -> None:
         errors.append(_err("required_approval_text must document the exact approval phrase"))
     if raw.get("recursive_scan") is True or raw.get("recursive_directory_scan") is True:
         errors.append(_err("recursive scan flags are rejected"))
+    if "write_visual_artifacts" in raw and raw.get("write_visual_artifacts") not in {True, False}:
+        errors.append(_err("write_visual_artifacts must be boolean"))
 
 
 def validate_report_config(raw: dict[str, Any]) -> list[str]:
@@ -505,6 +508,8 @@ def run_single_image_report(raw: dict[str, Any]) -> dict[str, Any]:
         "image_path": raw["image_path"],
         "checkpoint_path": raw["checkpoint_path"],
         "write_report": bool(raw.get("write_report")),
+        "visual_artifacts_written": False,
+        "localization_visualization_status": localization_head,
         "no_download": True,
         "no_network": True,
         "no_training": True,
@@ -521,6 +526,18 @@ def run_single_image_report(raw: dict[str, Any]) -> dict[str, Any]:
             "tampered": class_conf["tampered"],
         }
     report["reason"] = generate_reason(reason_input)
+    if raw.get("write_visual_artifacts") is True and localization_head == LOCALIZATION_ACTIVATED:
+        artifact_paths = write_visual_artifacts(
+            raw["image_path"],
+            mask_probs,
+            raw["report_root"],
+            mask_size=image_size,
+        )
+        report.update(artifact_paths)
+        report["localization_visualization_status"] = LOCALIZATION_ACTIVATED
+    elif raw.get("write_visual_artifacts") is True:
+        report["visual_artifacts_written"] = False
+        report["localization_visualization_status"] = localization_head
     if raw.get("write_report") is True:
         report_path = write_report_json(raw["report_root"], report)
         report["report_path"] = str(report_path)

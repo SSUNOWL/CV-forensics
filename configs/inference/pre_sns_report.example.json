@@ -15,6 +15,7 @@
   "approved_report_roots": [],
   "approved_local_roots": [],
   "write_report": false,
+  "write_visual_artifacts": false,
   "device": "cpu",
   "cuda_device_index": 0,
   "max_image_size": 64,
@@ -37,7 +38,9 @@
   "validation_notes": [
     "Tracked example is symbolic and safe to commit.",
     "Approved local inference requires I_APPROVE_PRE_SNS_SINGLE_IMAGE_REPORT.",
+    "Visual artifacts are off in the symbolic example.",
     "SNS augmentation is not part of this task.",
-    "PRE_SNS_SINGLE_IMAGE_REPORT_OK"
+    "PRE_SNS_SINGLE_IMAGE_REPORT_OK",
+    "PRE_SNS_VISUAL_ARTIFACTS_OK"
   ]
 }

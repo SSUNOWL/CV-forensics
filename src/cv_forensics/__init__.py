@@ -18,6 +18,7 @@ from . import local_data_gate
 from . import pre_sns_integrated_model
 from . import pre_sns_training_artifacts
 from . import pre_sns_inference_report
+from . import pre_sns_visualization
 from . import pre_sns_evaluation
 from . import pre_sns_baseline_report
 from .inference_stub import check_fake_input_config_safety
@@ -44,6 +45,7 @@ __all__ = [
     "pre_sns_integrated_model",
     "pre_sns_training_artifacts",
     "pre_sns_inference_report",
+    "pre_sns_visualization",
     "pre_sns_evaluation",
     "pre_sns_baseline_report",
 ]

@@ -259,6 +259,42 @@ def test_report_json_with_required_fields_accepted() -> None:
     assert not errors, "\n".join(errors)
 
 
+def test_report_json_with_visual_artifacts_accepted() -> None:
+    with temporary_root() as tmp:
+        report_root = Path(tmp) / "report"
+        report_root.mkdir()
+        image_path = str(Path(tmp) / "image.png")
+        checkpoint_path = str(Path(tmp) / "tiny.pt")
+        Path(image_path).write_bytes(b"fake")
+        Path(checkpoint_path).write_bytes(b"fake")
+        artifact_paths = {
+            "predicted_mask_path": report_root / "predicted_mask.png",
+            "heatmap_path": report_root / "heatmap.png",
+            "overlay_path": report_root / "overlay.png",
+            "visual_artifacts_manifest_path": report_root / "visual_artifacts_manifest.json",
+        }
+        for path in artifact_paths.values():
+            path.write_bytes(b"fake")
+        config = make_approved(tmp, image_path, checkpoint_path, str(report_root), write_report=False)
+        config["write_visual_artifacts"] = True
+        report = make_valid_report()
+        report.update(
+            {
+                "class": "tampered",
+                "class_conf": {"real": 0.1, "full_synthetic": 0.1, "tampered": 0.8},
+                "tampered_score": 0.8,
+                "localization_head": "activated",
+                "mask_area_pct": 50.0,
+                "image_path": image_path,
+                "checkpoint_path": checkpoint_path,
+                "visual_artifacts_written": True,
+                **{key: str(value) for key, value in artifact_paths.items()},
+            }
+        )
+        errors = validate_report(config, report)
+        assert not errors, "\n".join(errors)
+
+
 def test_missing_class_conf_rejected() -> None:
     report = make_valid_report()
     del report["class_conf"]
@@ -320,6 +356,23 @@ def test_write_report_false_writes_nothing() -> None:
         assert "report_path" not in report
 
 
+def test_visual_artifacts_do_not_replace_report_marker() -> None:
+    with temporary_root() as tmp:
+        image_path, checkpoint_path = create_fake_image_and_checkpoint(tmp)
+        if not image_path:
+            print("SKIP: torch or PIL unavailable; runtime inference visual marker test skipped.")
+            return
+        report_root = os.path.join(tmp, "report-root")
+        raw = make_approved(tmp, image_path, checkpoint_path, report_root, write_report=True)
+        raw["write_visual_artifacts"] = True
+        raw["threshold_tau"] = 0.0
+        report = run_single_image_report(raw)
+        assert report["marker"] == MARKER
+        if report["localization_head"] == "activated":
+            assert report["visual_artifacts_written"] is True
+            assert Path(report["visual_artifacts_manifest_path"]).is_file()
+
+
 def test_ordinary_authoritative_prose_not_rejected() -> None:
     with temporary_root() as tmp:
         image_path = os.path.join(tmp, "image.png")
@@ -347,6 +400,7 @@ def main() -> int:
         test_protected_paths_rejected,
         test_repo_outputs_checkpoints_report_root_rejected,
         test_report_json_with_required_fields_accepted,
+        test_report_json_with_visual_artifacts_accepted,
         test_missing_class_conf_rejected,
         test_missing_family_conf_rejected,
         test_missing_reason_rejected,
@@ -354,6 +408,7 @@ def main() -> int:
         test_threshold_tau_skips_localization,
         test_parser_handles_leading_log_text,
         test_write_report_false_writes_nothing,
+        test_visual_artifacts_do_not_replace_report_marker,
         test_ordinary_authoritative_prose_not_rejected,
     ]
     for test in tests:

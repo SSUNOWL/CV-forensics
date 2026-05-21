@@ -28,6 +28,14 @@ from cv_forensics.pre_sns_inference_report import (  # noqa: E402
 from cv_forensics.pre_sns_integrated_model import CLASS_LABELS, FAMILY_SMOKE_LABELS  # noqa: E402
 from cv_forensics.model_output_schema import LOCALIZATION_STATES  # noqa: E402
 
+REMOTE_PREFIXES = ("http://", "https://", "s3://", "gs://", "hf://")
+VISUAL_PATH_FIELDS = {
+    "predicted_mask_path": ".png",
+    "heatmap_path": ".png",
+    "overlay_path": ".png",
+    "visual_artifacts_manifest_path": ".json",
+}
+
 
 def _err(message: str) -> str:
     return f"- {message}"
@@ -63,6 +71,14 @@ def _repo_outputs_or_checkpoints(path: str | Path) -> bool:
 
 def _inside_repo(path: str | Path) -> bool:
     return _is_under(path, REPO_ROOT)
+
+
+def _looks_remote(path: str) -> bool:
+    return path.lower().startswith(REMOTE_PREFIXES)
+
+
+def _has_protected_segment(path: str) -> bool:
+    return any(part in {".env", "secrets", "data", "datasets", "outputs", "checkpoints"} for part in path.replace("\\", "/").split("/") if part)
 
 
 def _validate_conf(conf: Any, labels: tuple[str, ...], field: str, errors: list[str]) -> None:
@@ -132,6 +148,31 @@ def validate_report(config: dict[str, Any], report: dict[str, Any]) -> list[str]
                     errors.append(_err("report_path must not be inside repository outputs/checkpoints"))
                 if not _is_under(report_path, config.get("report_root", "")):
                     errors.append(_err("report_path must be under report_root"))
+        visual_requested = config.get("write_visual_artifacts") is True
+        visual_written = report.get("visual_artifacts_written") is True
+        if visual_requested and report.get("localization_head") == "activated" and not visual_written:
+            errors.append(_err("visual_artifacts_written must be true when activated visual artifacts are requested"))
+        if visual_written:
+            report_root = config.get("report_root", "")
+            for field, suffix in VISUAL_PATH_FIELDS.items():
+                value = report.get(field)
+                if not isinstance(value, str) or not value:
+                    errors.append(_err(f"{field} is required when visual artifacts are written"))
+                    continue
+                if _looks_remote(value):
+                    errors.append(_err(f"{field} must not be URL-like"))
+                if _has_protected_segment(value):
+                    errors.append(_err(f"{field} must not contain protected path segments"))
+                if not value.endswith(suffix):
+                    errors.append(_err(f"{field} must end with {suffix}"))
+                if not os.path.isfile(value):
+                    errors.append(_err(f"{field} must exist"))
+                if _inside_repo(value):
+                    errors.append(_err(f"{field} must be outside the repository"))
+                if _repo_outputs_or_checkpoints(value):
+                    errors.append(_err(f"{field} must not be inside repository outputs/checkpoints"))
+                if not _is_under(value, report_root):
+                    errors.append(_err(f"{field} must be under report_root"))
     return errors
 
 
