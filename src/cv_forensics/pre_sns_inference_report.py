@@ -23,7 +23,7 @@ from .model_output_schema import (
     SCHEMA_VERSION,
 )
 from .pre_sns_integrated_model import CLASS_LABELS, FAMILY_SMOKE_LABELS, build_tiny_integrated_model, schema_class_label
-from .pre_sns_visualization import write_visual_artifacts
+from .pre_sns_visualization import write_clean_red_overlay, write_visual_artifacts
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MARKER = "PRE_SNS_SINGLE_IMAGE_REPORT_OK"
@@ -326,6 +326,21 @@ def _validate_common(raw: dict[str, Any], errors: list[str]) -> None:
         errors.append(_err("recursive scan flags are rejected"))
     if "write_visual_artifacts" in raw and raw.get("write_visual_artifacts") not in {True, False}:
         errors.append(_err("write_visual_artifacts must be boolean"))
+    if "write_clean_red_overlay" in raw and raw.get("write_clean_red_overlay") not in {True, False}:
+        errors.append(_err("write_clean_red_overlay must be boolean"))
+    keep_ratio = raw.get("clean_overlay_keep_ratio", 0.1)
+    if isinstance(keep_ratio, bool) or not isinstance(keep_ratio, (int, float)) or not (0.0 < float(keep_ratio) <= 1.0):
+        errors.append(_err("clean_overlay_keep_ratio must be a number in (0, 1]"))
+    clean_alpha = raw.get("clean_overlay_alpha", 0.45)
+    if isinstance(clean_alpha, bool) or not isinstance(clean_alpha, (int, float)) or not (0.0 < float(clean_alpha) <= 1.0):
+        errors.append(_err("clean_overlay_alpha must be a number in (0, 1]"))
+    if raw.get("clean_overlay_component_mode", "largest_component") not in {"largest_component", "all_components"}:
+        errors.append(_err("clean_overlay_component_mode must be largest_component or all_components"))
+    if raw.get("clean_overlay_threshold_mode", "top_percentile") not in {"top_percentile", "fixed_0_5"}:
+        errors.append(_err("clean_overlay_threshold_mode must be top_percentile or fixed_0_5"))
+    red_rgb = raw.get("clean_overlay_red_rgb", [255, 0, 0])
+    if not isinstance(red_rgb, list) or len(red_rgb) != 3 or any(isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 255 for value in red_rgb):
+        errors.append(_err("clean_overlay_red_rgb must be three integers in [0, 255]"))
 
 
 def validate_report_config(raw: dict[str, Any]) -> list[str]:
@@ -510,6 +525,8 @@ def run_single_image_report(raw: dict[str, Any]) -> dict[str, Any]:
         "write_report": bool(raw.get("write_report")),
         "visual_artifacts_written": False,
         "localization_visualization_status": localization_head,
+        "clean_red_overlay_written": False,
+        "clean_red_overlay_status": localization_head,
         "no_download": True,
         "no_network": True,
         "no_training": True,
@@ -538,6 +555,23 @@ def run_single_image_report(raw: dict[str, Any]) -> dict[str, Any]:
     elif raw.get("write_visual_artifacts") is True:
         report["visual_artifacts_written"] = False
         report["localization_visualization_status"] = localization_head
+    if raw.get("write_clean_red_overlay") is True and localization_head == LOCALIZATION_ACTIVATED:
+        clean_paths = write_clean_red_overlay(
+            raw["image_path"],
+            mask_probs,
+            raw["report_root"],
+            mask_size=image_size,
+            keep_ratio=float(raw.get("clean_overlay_keep_ratio", 0.1)),
+            component_mode=str(raw.get("clean_overlay_component_mode", "largest_component")),
+            alpha=float(raw.get("clean_overlay_alpha", 0.45)),
+            threshold_mode=str(raw.get("clean_overlay_threshold_mode", "top_percentile")),
+            red_rgb=raw.get("clean_overlay_red_rgb", [255, 0, 0]),
+        )
+        report.update(clean_paths)
+        report["clean_red_overlay_status"] = LOCALIZATION_ACTIVATED
+    elif raw.get("write_clean_red_overlay") is True:
+        report["clean_red_overlay_written"] = False
+        report["clean_red_overlay_status"] = localization_head
     if raw.get("write_report") is True:
         report_path = write_report_json(raw["report_root"], report)
         report["report_path"] = str(report_path)

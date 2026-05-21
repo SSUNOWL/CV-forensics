@@ -35,6 +35,11 @@ VISUAL_PATH_FIELDS = {
     "overlay_path": ".png",
     "visual_artifacts_manifest_path": ".json",
 }
+CLEAN_OVERLAY_PATH_FIELDS = {
+    "clean_focused_mask_path": ".png",
+    "clean_red_overlay_path": ".png",
+    "clean_red_overlay_manifest_path": ".json",
+}
 
 
 def _err(message: str) -> str:
@@ -79,6 +84,67 @@ def _looks_remote(path: str) -> bool:
 
 def _has_protected_segment(path: str) -> bool:
     return any(part in {".env", "secrets", "data", "datasets", "outputs", "checkpoints"} for part in path.replace("\\", "/").split("/") if part)
+
+
+def _validate_artifact_paths(
+    fields: dict[str, str],
+    report: dict[str, Any],
+    report_root: str,
+    errors: list[str],
+    context: str,
+) -> None:
+    for field, suffix in fields.items():
+        value = report.get(field)
+        if not isinstance(value, str) or not value:
+            errors.append(_err(f"{field} is required when {context} are written"))
+            continue
+        if _looks_remote(value):
+            errors.append(_err(f"{field} must not be URL-like"))
+        if ".." in value.replace("\\", "/").split("/"):
+            errors.append(_err(f"{field} must not contain path traversal"))
+        if _has_protected_segment(value):
+            errors.append(_err(f"{field} must not contain protected path segments"))
+        if not value.endswith(suffix):
+            errors.append(_err(f"{field} must end with {suffix}"))
+        if not os.path.isfile(value):
+            errors.append(_err(f"{field} must exist"))
+        elif os.path.getsize(value) <= 0:
+            errors.append(_err(f"{field} must be non-empty"))
+        if _inside_repo(value):
+            errors.append(_err(f"{field} must be outside the repository"))
+        if _repo_outputs_or_checkpoints(value):
+            errors.append(_err(f"{field} must not be inside repository outputs/checkpoints"))
+        if not _is_under(value, report_root):
+            errors.append(_err(f"{field} must be under report_root"))
+
+
+def _validate_clean_overlay_pixels(report: dict[str, Any], errors: list[str]) -> None:
+    try:
+        from PIL import Image
+    except Exception:
+        return
+    image_path = report.get("image_path")
+    mask_path = report.get("clean_focused_mask_path")
+    overlay_path = report.get("clean_red_overlay_path")
+    if not all(isinstance(path, str) and os.path.isfile(path) for path in (image_path, mask_path, overlay_path)):
+        return
+    try:
+        with Image.open(image_path) as original, Image.open(mask_path) as mask, Image.open(overlay_path) as overlay:
+            original_rgb = original.convert("RGB")
+            overlay_rgb = overlay.convert("RGB")
+            mask_l = mask.convert("L")
+        if original_rgb.size != overlay_rgb.size:
+            errors.append(_err("clean_red_overlay_path must have the same size as image_path"))
+            return
+        if mask_l.size != overlay_rgb.size:
+            errors.append(_err("clean_focused_mask_path must have the same size as clean_red_overlay_path"))
+            return
+        for index, mask_value in enumerate(mask_l.getdata()):
+            if mask_value <= 0 and original_rgb.getdata()[index] != overlay_rgb.getdata()[index]:
+                errors.append(_err("clean_red_overlay_path must not alter pixels outside clean_focused_mask_path"))
+                return
+    except Exception as exc:
+        errors.append(_err(f"clean overlay pixel validation failed: {exc}"))
 
 
 def _validate_conf(conf: Any, labels: tuple[str, ...], field: str, errors: list[str]) -> None:
@@ -154,25 +220,18 @@ def validate_report(config: dict[str, Any], report: dict[str, Any]) -> list[str]
             errors.append(_err("visual_artifacts_written must be true when activated visual artifacts are requested"))
         if visual_written:
             report_root = config.get("report_root", "")
-            for field, suffix in VISUAL_PATH_FIELDS.items():
-                value = report.get(field)
-                if not isinstance(value, str) or not value:
-                    errors.append(_err(f"{field} is required when visual artifacts are written"))
-                    continue
-                if _looks_remote(value):
-                    errors.append(_err(f"{field} must not be URL-like"))
-                if _has_protected_segment(value):
-                    errors.append(_err(f"{field} must not contain protected path segments"))
-                if not value.endswith(suffix):
-                    errors.append(_err(f"{field} must end with {suffix}"))
-                if not os.path.isfile(value):
-                    errors.append(_err(f"{field} must exist"))
-                if _inside_repo(value):
-                    errors.append(_err(f"{field} must be outside the repository"))
-                if _repo_outputs_or_checkpoints(value):
-                    errors.append(_err(f"{field} must not be inside repository outputs/checkpoints"))
-                if not _is_under(value, report_root):
-                    errors.append(_err(f"{field} must be under report_root"))
+            _validate_artifact_paths(VISUAL_PATH_FIELDS, report, report_root, errors, "visual artifacts")
+        clean_requested = config.get("write_clean_red_overlay") is True
+        clean_written = report.get("clean_red_overlay_written") is True
+        if clean_requested and report.get("localization_head") == "activated" and not clean_written:
+            errors.append(_err("clean_red_overlay_written must be true when activated clean red overlay is requested"))
+        if clean_written:
+            report_root = config.get("report_root", "")
+            _validate_artifact_paths(CLEAN_OVERLAY_PATH_FIELDS, report, report_root, errors, "clean red overlay artifacts")
+            area = report.get("clean_overlay_area_pct")
+            if isinstance(area, bool) or not isinstance(area, (int, float)) or not 0.0 <= float(area) <= 100.0:
+                errors.append(_err("clean_overlay_area_pct must be numeric in [0, 100]"))
+            _validate_clean_overlay_pixels(report, errors)
     return errors
 
 

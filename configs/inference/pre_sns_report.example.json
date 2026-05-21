@@ -16,6 +16,16 @@
   "approved_local_roots": [],
   "write_report": false,
   "write_visual_artifacts": false,
+  "write_clean_red_overlay": false,
+  "clean_overlay_keep_ratio": 0.1,
+  "clean_overlay_component_mode": "largest_component",
+  "clean_overlay_alpha": 0.45,
+  "clean_overlay_threshold_mode": "top_percentile",
+  "clean_overlay_red_rgb": [
+    255,
+    0,
+    0
+  ],
   "device": "cpu",
   "cuda_device_index": 0,
   "max_image_size": 64,
@@ -39,8 +49,10 @@
     "Tracked example is symbolic and safe to commit.",
     "Approved local inference requires I_APPROVE_PRE_SNS_SINGLE_IMAGE_REPORT.",
     "Visual artifacts are off in the symbolic example.",
+    "Clean red overlay artifacts are off in the symbolic example.",
     "SNS augmentation is not part of this task.",
     "PRE_SNS_SINGLE_IMAGE_REPORT_OK",
-    "PRE_SNS_VISUAL_ARTIFACTS_OK"
+    "PRE_SNS_VISUAL_ARTIFACTS_OK",
+    "PRE_SNS_CLEAN_RED_OVERLAY_OK"
   ]
 }
