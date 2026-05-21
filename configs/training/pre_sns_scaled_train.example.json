@@ -1,0 +1,42 @@
+{
+  "schema_version": "1.0",
+  "config_kind": "example_symbolic",
+  "execution_mode": "example_only",
+  "scale": "scaled_pilot",
+  "marker": "PRE_SNS_SCALED_TRAINING_PLAN_OK",
+  "train_name": "pre_sns_scaled_training_plan_example",
+  "approved_training_run": false,
+  "required_approval_text": "I_APPROVE_PRE_SNS_BASELINE_TRAINING",
+  "user_approval_text": "",
+  "no_write_dry_run": true,
+  "no_download": true,
+  "no_network": true,
+  "no_sns_augmentation": true,
+  "unified_manifest_path": "symbolic approved local unified manifest path",
+  "approved_run_root": "symbolic approved local run root outside repository",
+  "approved_checkpoint_root": "symbolic approved local checkpoint root outside repository",
+  "device": "cpu",
+  "max_samples": 8192,
+  "epochs": 2,
+  "batch_size": 8,
+  "max_image_size": 160,
+  "seed": 23,
+  "class_loss_weight": 1.0,
+  "family_loss_weight": 1.0,
+  "localization_loss_weight": 1.0,
+  "result_scope": "scaled pre-SNS baseline training plan example; not final full-dataset performance",
+  "scale_guardrails": {
+    "max_samples_lte": 50000,
+    "epochs_lte": 10,
+    "batch_size_lte": 64,
+    "max_image_size_lte": 512,
+    "no_sns_augmentation": true,
+    "training_not_started_by_generator": true
+  },
+  "validation_notes": [
+    "Tracked example is symbolic and safe to commit.",
+    "Approved local scaled training still requires I_APPROVE_PRE_SNS_BASELINE_TRAINING.",
+    "SNS augmentation is not part of this task.",
+    "PRE_SNS_SCALED_TRAINING_PLAN_OK"
+  ]
+}
