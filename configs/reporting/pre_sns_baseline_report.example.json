@@ -1,0 +1,27 @@
+{
+  "schema_version": "1.0",
+  "config_kind": "example_symbolic",
+  "execution_mode": "example_only",
+  "required_approval_text": "I_APPROVE_PRE_SNS_BASELINE_REPORT",
+  "user_approval_text": "",
+  "training_result_path": "symbolic explicit training result JSON path",
+  "inference_report_path": "symbolic explicit single image inference report JSON path",
+  "evaluation_result_path": "symbolic explicit pre-SNS evaluation result JSON path",
+  "scaled_training_result_path": "symbolic explicit scaled training result JSON path",
+  "approved_report_root": "symbolic approved local report root outside repository",
+  "write_report": false,
+  "no_download": true,
+  "no_network": true,
+  "no_training": true,
+  "no_inference": true,
+  "no_evaluation": true,
+  "no_checkpoint_writes": true,
+  "no_sns_augmentation": true,
+  "result_scope": "pre-SNS baseline report example before SNS augmentation",
+  "validation_notes": [
+    "Tracked example is symbolic and safe to commit.",
+    "Report generation reads explicit result JSON paths only.",
+    "SNS augmentation has not been applied.",
+    "PRE_SNS_BASELINE_REPORT_OK"
+  ]
+}

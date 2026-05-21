@@ -1,66 +1,41 @@
-# Pre-SNS Baseline Evaluation Report Scaffold
+# Pre-SNS Baseline Report
 
-<!-- PRE_SNS_BASELINE_REPORT_OK -->
+`PRE_SNS_BASELINE_REPORT_OK`
 
-This document defines the pre-SNS baseline evaluation report scaffold. It is the
-comparison anchor for later SNS robustness analysis and SNS augmentation-aware
-training comparisons.
+This document describes the pre-SNS baseline report generator. The generator
+collects already-created JSON results from pilot training, single-image
+inference, pre-SNS evaluation, and scaled training, then summarizes them before
+SNS augmentation begins.
 
-This is not dataset download, not training, not real evaluation, and not real
-image or mask reading. No real metric values are claimed in this task; every
-metric value remains pending until explicit user approval for a real baseline
-evaluation.
+## Expected Inputs
 
-## Purpose
+The config must list explicit local JSON result paths:
 
-The scaffold records which baseline metrics must exist before any SNS stage
-begins. Later SNS perturbation robustness work can compare against this anchor,
-including future robustness drop fields and future SNS-augmented training
-comparisons.
+- `training_result_path`
+- `inference_report_path`
+- `evaluation_result_path`
+- `scaled_training_result_path`
 
-## Dependencies
+The generator reads those paths only. It does not scan directories, train, run
+inference, run evaluation, download data, write checkpoints, or apply SNS
+augmentation.
 
-This report scaffold depends on:
+## Generated Artifacts
 
-- task 0007 model output schema
-- task 0008 fake inference
-- task 0009 metrics
-- task 0010 training dry-run
-- task 0011 local data readiness
-- task 0012 CF-Small subset smoke
-- task 0013 SID-Set subset smoke
-- task 0014 CF-Small baseline plan
-- task 0015 SID-Set multi-head baseline plan
+When `write_report=true`, the generator writes a small Markdown report and JSON
+summary under `approved_report_root`, which must be outside the repository and
+not under repository `outputs/` or `checkpoints/`.
 
-## Required Metric Fields
+The tracked document is a template and policy note only. It must not contain
+private local paths from a lab run.
 
-The pre-SNS baseline report must reserve placeholders for:
+## No-SNS Status
 
-- 3-way accuracy
-- Macro-F1
-- mask IoU
-- generator-family accuracy
-- localization activation recall
-- latency
-- FPS
+The report must clearly state that SNS augmentation has not been applied yet.
+It is a pre-SNS baseline snapshot used to decide the next SNS augmentation and
+robustness-evaluation step.
 
-Every metric value stays null with status `pending_real_baseline_run` until the
-user explicitly approves real baseline evaluation.
+## Claim Boundary
 
-## SNS Boundary
-
-SNS robustness drop is a future comparison field and remains pending until
-SNS-stage tasks. SNS augmentation is not implemented here, and SNS perturbation
-evaluation is not run here.
-
-## Before Real Baseline Evaluation
-
-Before any real pre-SNS baseline evaluation:
-
-- explicit user approval is required
-- local path policy must be validated
-- manifests must be validated
-- local subset smoke confirmation must pass
-- output policy must be approved
-- checkpoint policy must be approved
-- compute budget policy must be approved
+The report is not a final full-dataset performance claim unless scaled or full
+evaluation has been separately approved, completed, and documented.
