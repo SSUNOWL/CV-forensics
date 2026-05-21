@@ -1,0 +1,43 @@
+{
+  "schema_version": "1.0",
+  "config_kind": "example_symbolic",
+  "execution_mode": "example_only",
+  "no_download": true,
+  "no_network": true,
+  "no_training": true,
+  "no_checkpoint_writes": true,
+  "no_sns_augmentation": true,
+  "checkpoint_path": "symbolic approved local trained checkpoint path outside repository",
+  "image_path": "symbolic approved local single image path",
+  "report_root": "symbolic approved local report root outside repository",
+  "approved_image_roots": [],
+  "approved_checkpoint_roots": [],
+  "approved_report_roots": [],
+  "approved_local_roots": [],
+  "write_report": false,
+  "device": "cpu",
+  "cuda_device_index": 0,
+  "max_image_size": 64,
+  "threshold_tau": 0.5,
+  "class_labels": [
+    "real",
+    "full_synthetic",
+    "tampered"
+  ],
+  "family_labels": [
+    "LatDiff",
+    "PixDiff",
+    "GAN",
+    "Other",
+    "Real-or-N/A"
+  ],
+  "required_approval_text": "I_APPROVE_PRE_SNS_SINGLE_IMAGE_REPORT",
+  "user_approval_text": "",
+  "result_scope": "single-image pre-SNS inference report; not a final full-dataset performance claim",
+  "validation_notes": [
+    "Tracked example is symbolic and safe to commit.",
+    "Approved local inference requires I_APPROVE_PRE_SNS_SINGLE_IMAGE_REPORT.",
+    "SNS augmentation is not part of this task.",
+    "PRE_SNS_SINGLE_IMAGE_REPORT_OK"
+  ]
+}
