@@ -50,7 +50,7 @@ Implement a guarded pre-SNS training artifact writer and minimal real pilot trai
 - .local/pre_sns_dataset_manifest.local.json
 - .local/pre_sns_baseline_train.local.json
 
-## Files Codex may modify
+## Files Codex May Modify
 - scripts/training/train_pre_sns_baseline.py
 - src/cv_forensics/pre_sns_training_artifacts.py
 - src/cv_forensics/__init__.py
