@@ -1,0 +1,29 @@
+{
+  "schema_version": "1.0",
+  "config_kind": "example_symbolic",
+  "execution_mode": "example_only",
+  "required_approval_text": "I_APPROVE_PRE_SNS_EVALUATION",
+  "user_approval_text": "",
+  "manifest_path": "symbolic approved local pre-SNS unified manifest path",
+  "checkpoint_path": "symbolic approved local trained checkpoint path",
+  "approved_eval_root": "symbolic approved local evaluation artifact root outside repository",
+  "write_eval_artifact": false,
+  "device": "cpu",
+  "cuda_device_index": 0,
+  "max_samples": 16,
+  "batch_size": 1,
+  "max_image_size": 64,
+  "threshold_tau": 0.5,
+  "no_download": true,
+  "no_network": true,
+  "no_training": true,
+  "no_checkpoint_writes": true,
+  "no_sns_augmentation": true,
+  "result_scope": "pre-SNS evaluation example; not a final full-dataset performance claim",
+  "validation_notes": [
+    "Tracked example is symbolic and safe to commit.",
+    "Approved local evaluation requires I_APPROVE_PRE_SNS_EVALUATION.",
+    "SNS augmentation is not part of this task.",
+    "PRE_SNS_EVALUATION_OK"
+  ]
+}
