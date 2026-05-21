@@ -97,6 +97,18 @@ def _validate_local_directory(path_value: Any, field: str, errors: list[str]) ->
         errors.append(_err(f"{field} must be outside the repository"))
 
 
+def _validate_optional_local_roots(raw: dict[str, Any], field: str, errors: list[str]) -> list[str]:
+    value = raw.get(field)
+    if value is None:
+        return []
+    if not isinstance(value, list) or not all(isinstance(root, str) for root in value):
+        errors.append(_err(f"{field} must be a list of absolute local paths when present"))
+        return []
+    for index, root in enumerate(value):
+        _validate_local_directory(root, f"{field}[{index}]", errors)
+    return list(value)
+
+
 def _validate_numbers(raw: dict[str, Any], errors: list[str]) -> None:
     int_caps = {"batch_size": 32, "epochs": 100, "max_samples": 1000000}
     for key, cap in int_caps.items():
@@ -159,7 +171,14 @@ def _validate_approved(raw: dict[str, Any], errors: list[str]) -> None:
     run_root = raw.get("approved_run_root")
     checkpoint_root = raw.get("approved_checkpoint_root")
     allowed_abs = set(roots)
-    for value in (manifest_path, run_root, checkpoint_root):
+    output_roots = _validate_optional_local_roots(raw, "approved_local_output_roots", errors)
+    optional_alias_roots = []
+    for alias in ("run_root", "checkpoint_root"):
+        value = raw.get(alias)
+        if isinstance(value, str):
+            _validate_local_directory(value, alias, errors)
+            optional_alias_roots.append(value)
+    for value in (manifest_path, run_root, checkpoint_root, *output_roots, *optional_alias_roots):
         if isinstance(value, str):
             allowed_abs.add(value)
     for issue in walk_safety(raw, allowed_abs_values=allowed_abs):
