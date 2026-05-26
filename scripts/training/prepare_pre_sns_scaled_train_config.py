@@ -27,6 +27,10 @@ STALE_OUTPUT_ROOT_FIELDS = {
     "artifact_root",
     "output_root",
     "approved_local_output_roots",
+    "dataset_manifest_path",
+    "manifest_path",
+    "train_manifest_path",
+    "val_manifest_path",
 }
 
 

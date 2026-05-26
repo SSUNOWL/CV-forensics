@@ -41,6 +41,12 @@ REQUIRED_FIELDS = (
     "family_loss_weight",
     "localization_loss_weight",
 )
+OPTIONAL_MANIFEST_PATH_FIELDS = (
+    "dataset_manifest_path",
+    "manifest_path",
+    "train_manifest_path",
+    "val_manifest_path",
+)
 
 
 def _err(message: str) -> str:
@@ -178,7 +184,12 @@ def _validate_approved(raw: dict[str, Any], errors: list[str]) -> None:
         if isinstance(value, str):
             _validate_local_directory(value, alias, errors)
             optional_alias_roots.append(value)
-    for value in (manifest_path, run_root, checkpoint_root, *output_roots, *optional_alias_roots):
+    optional_manifest_paths = [
+        value
+        for field in OPTIONAL_MANIFEST_PATH_FIELDS
+        if isinstance((value := raw.get(field)), str)
+    ]
+    for value in (manifest_path, *optional_manifest_paths, run_root, checkpoint_root, *output_roots, *optional_alias_roots):
         if isinstance(value, str):
             allowed_abs.add(value)
     for issue in walk_safety(raw, allowed_abs_values=allowed_abs):
@@ -191,6 +202,18 @@ def _validate_approved(raw: dict[str, Any], errors: list[str]) -> None:
             errors.append(_err("unified_manifest_path must be under approved_local_roots"))
     else:
         errors.append(_err("unified_manifest_path must be a non-empty path string"))
+
+    for field in OPTIONAL_MANIFEST_PATH_FIELDS:
+        value = raw.get(field)
+        if value is None:
+            continue
+        if isinstance(value, str):
+            for issue in validate_explicit_local_file(value, roots, field):
+                errors.append(_err(f"{issue.path}: {issue.message}"))
+            if roots and not path_is_under(value, roots):
+                errors.append(_err(f"{field} must be under approved_local_roots"))
+        else:
+            errors.append(_err(f"{field} must be a path string when present"))
 
     _validate_local_directory(run_root, "approved_run_root", errors)
     _validate_local_directory(checkpoint_root, "approved_checkpoint_root", errors)

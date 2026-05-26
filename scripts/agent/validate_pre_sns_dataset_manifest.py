@@ -82,8 +82,13 @@ def _validate_common(raw: dict[str, Any], errors: list[str]) -> None:
     if not isinstance(source_policy, dict):
         errors.append(_err("source_dataset_policy must be an object"))
     else:
-        supported = source_policy.get("supported_sources")
-        if set(supported or []) != set(SOURCE_DATASETS):
+        supported = source_policy.get("supported_sources", source_policy.get("allowed_sources"))
+        normalized_supported = {
+            SOURCE_DATASET_ALIASES.get(source, source)
+            for source in supported or []
+            if isinstance(source, str)
+        }
+        if normalized_supported != set(SOURCE_DATASETS):
             errors.append(_err("source_dataset_policy.supported_sources must include CF-Small and SID-Set"))
 
 
