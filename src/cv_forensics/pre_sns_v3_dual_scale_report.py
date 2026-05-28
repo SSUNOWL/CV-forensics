@@ -152,7 +152,15 @@ def validate_dual_report_config(raw: dict[str, Any], require_exists: bool = Fals
         errors.append(_err("execution_mode must be approved_local_pre_sns_v3_dual_report"))
     if kind == EXAMPLE_KIND and raw.get("execution_mode") != "example_only":
         errors.append(_err("example execution_mode must be example_only"))
-    for field in ("mask_threshold", "agreement_iou_threshold", "uncertain_tampered_score", "very_high_tampered_score"):
+    for field in (
+        "mask_threshold",
+        "agreement_iou_threshold",
+        "cross_scale_disagreement_iou_threshold",
+        "tiny_mask_area_pct_threshold",
+        "strong_component_area_pct_threshold",
+        "uncertain_tampered_score",
+        "very_high_tampered_score",
+    ):
         if field in raw:
             value = raw[field]
             if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0.0 <= float(value) <= 1.0:
@@ -310,46 +318,82 @@ def mask_iou(a: list[int], b: list[int]) -> float:
     return 1.0 if union == 0 else intersection / union
 
 
+def resize_binary_mask_nearest(active: list[int], src_shape: tuple[int, int], dst_shape: tuple[int, int]) -> list[int]:
+    if src_shape == dst_shape:
+        return [1 if value else 0 for value in active]
+    src_w, src_h = int(src_shape[0]), int(src_shape[1])
+    dst_w, dst_h = int(dst_shape[0]), int(dst_shape[1])
+    if src_w <= 0 or src_h <= 0 or dst_w <= 0 or dst_h <= 0 or len(active) != src_w * src_h:
+        return [0] * max(dst_w * dst_h, 0)
+    resized: list[int] = []
+    for y in range(dst_h):
+        src_y = min(src_h - 1, int(y * src_h / dst_h))
+        for x in range(dst_w):
+            src_x = min(src_w - 1, int(x * src_w / dst_w))
+            resized.append(1 if active[src_y * src_w + src_x] else 0)
+    return resized
+
+
 def select_final_mask(long224: dict[str, Any], long256: dict[str, Any], config: dict[str, Any] | None = None) -> dict[str, Any]:
     cfg = config or {}
     agreement_threshold = float(cfg.get("agreement_iou_threshold", 0.15))
+    disagreement_threshold = float(cfg.get("cross_scale_disagreement_iou_threshold", 0.05))
     uncertain_threshold = float(cfg.get("uncertain_tampered_score", 0.35))
     very_high_threshold = float(cfg.get("very_high_tampered_score", 0.85))
     primary_class = str(long256.get("class", "tampered"))
     primary_score = float(long256.get("tampered_score", 0.0))
+    class224 = str(long224.get("class", ""))
+    class256 = str(long256.get("class", primary_class))
     mask224 = list(long224.get("processed_mask", []))
     mask256 = list(long256.get("processed_mask", []))
+    shape224 = tuple(long224.get("mask_shape") or (0, 0))
+    shape256 = tuple(long256.get("mask_shape") or (0, 0))
     shape = tuple(long256.get("mask_shape") or long224.get("mask_shape") or (0, 0))
+    comparable224 = resize_binary_mask_nearest(mask224, shape224, shape) if mask224 and shape224 != (0, 0) and shape != (0, 0) else mask224
+    comparable256 = resize_binary_mask_nearest(mask256, shape256, shape) if mask256 and shape256 != (0, 0) and shape != (0, 0) else mask256
     active224 = sum(mask224) > 0
     active256 = sum(mask256) > 0
-    selected = [0] * len(mask256 or mask224)
+    selected = [0] * len(comparable256 or comparable224)
     source = "none"
+    reason = "no active mask selected"
     agreement = 0.0
     uncertain = False
-    if active224 and active256 and len(mask224) == len(mask256):
-        agreement = mask_iou(mask224, mask256)
+    cross_scale_disagreement = False
+    empty_peer_downgrade = False
+    if active224 and active256 and len(comparable224) == len(comparable256):
+        agreement = mask_iou(comparable224, comparable256)
         if agreement >= agreement_threshold:
-            selected = [1 if a or b else 0 for a, b in zip(mask224, mask256)]
+            selected = [1 if a or b else 0 for a, b in zip(comparable224, comparable256)]
             source = "dual_scale_union_agreement"
+            reason = f"both masks active with agreement IoU {agreement:.4f}"
         elif primary_class == "tampered":
-            selected = mask256
+            selected = comparable256
             source = "long256_primary_disagreement"
             uncertain = True
+            reason = f"both masks active but agreement IoU {agreement:.4f} is below union threshold {agreement_threshold:.4f}; long256 mask retained as primary"
+        if class224 == "tampered" and class256 == "tampered" and agreement < disagreement_threshold:
+            cross_scale_disagreement = True
     elif active256 and primary_class == "tampered":
-        selected = mask256
+        selected = comparable256
         source = "long256_primary"
+        empty_peer_downgrade = True
+        reason = "long256 mask selected while long224 mask is empty or absent"
     elif active224 and not active256 and (primary_class == "tampered" or primary_score >= uncertain_threshold):
-        selected = mask224
+        selected = comparable224
         source = "long224_fallback_primary_tampered_or_uncertain"
         uncertain = primary_class != "tampered"
+        empty_peer_downgrade = True
+        reason = "long224 mask selected because long256 mask is empty and long256 class is tampered or uncertain"
     if primary_class != "tampered" and sum(selected) > 0:
         if primary_score >= very_high_threshold:
             uncertain = True
             source = f"{source}_kept_high_tamper_score"
+            reason = f"{reason}; non-tampered class retained mask only because tampered score is very high"
         else:
             selected = [0] * len(selected)
             source = "suppressed_non_tampered_mask"
             uncertain = True
+            reason = "mask suppressed because long256 class is non-tampered and tampered score is not very high"
     stats = mask_stats(selected, shape) if selected and shape != (0, 0) else {
         "mask_area_px": 0,
         "mask_area_pct": 0.0,
@@ -363,8 +407,15 @@ def select_final_mask(long224: dict[str, Any], long256: dict[str, Any], config: 
         "mask": selected,
         "mask_shape": shape,
         "source": source,
+        "reason": reason,
         "agreement_iou": float(agreement),
         "uncertain": bool(uncertain),
+        "active_long224": bool(active224),
+        "active_long256": bool(active256),
+        "long224_class": class224,
+        "long256_class": class256,
+        "cross_scale_disagreement": bool(cross_scale_disagreement),
+        "empty_peer_downgrade": bool(empty_peer_downgrade),
         "stats": stats,
     }
 
@@ -372,8 +423,19 @@ def select_final_mask(long224: dict[str, Any], long256: dict[str, Any], config: 
 def class_mask_consistency(primary_class: str, tampered_score: float, selected: dict[str, Any], config: dict[str, Any] | None = None) -> dict[str, str | float]:
     cfg = config or {}
     high_threshold = float(cfg.get("very_high_tampered_score", 0.85))
+    disagreement_threshold = float(cfg.get("cross_scale_disagreement_iou_threshold", 0.05))
+    tiny_area_threshold = float(cfg.get("tiny_mask_area_pct_threshold", 0.15))
+    strong_component_threshold = float(cfg.get("strong_component_area_pct_threshold", 0.5))
     area = float(selected.get("stats", {}).get("mask_area_pct", 0.0))
+    largest = float(selected.get("stats", {}).get("largest_component_area_pct", 0.0))
+    agreement = float(selected.get("agreement_iou", 0.0))
     uncertain = bool(selected.get("uncertain"))
+    disputed = bool(selected.get("cross_scale_disagreement"))
+    empty_peer = bool(selected.get("empty_peer_downgrade"))
+    tiny_low_agreement = area > 0.0 and area < tiny_area_threshold and agreement < disagreement_threshold
+    strong_single_scale = largest >= strong_component_threshold and area >= tiny_area_threshold
+    disagreement_reason = "none"
+    localization_confidence = "none"
     if primary_class == "tampered":
         if area <= 0.0:
             return {
@@ -381,6 +443,36 @@ def class_mask_consistency(primary_class: str, tampered_score: float, selected: 
                 "localized_evidence_status": "not_found",
                 "final_decision": "tampered_suspect_no_localized_evidence",
                 "final_decision_confidence": "medium",
+                "localization_confidence": "none",
+                "localization_disagreement_reason": "tampered class but no retained localization mask",
+            }
+        if disputed:
+            status = "weak_disputed" if tiny_low_agreement else "disputed"
+            return {
+                "class_mask_consistency": "cross_scale_mask_disagreement",
+                "localized_evidence_status": status,
+                "final_decision": "tampered_suspect_disputed_localization",
+                "final_decision_confidence": "medium",
+                "localization_confidence": "low" if tiny_low_agreement else "medium",
+                "localization_disagreement_reason": f"both models predict tampered but processed mask agreement IoU {agreement:.4f} is below {disagreement_threshold:.4f}",
+            }
+        if empty_peer and not strong_single_scale:
+            return {
+                "class_mask_consistency": "single_scale_localization_only",
+                "localized_evidence_status": "weak_single_scale",
+                "final_decision": "tampered_suspect_weak_localization",
+                "final_decision_confidence": "medium",
+                "localization_confidence": "low",
+                "localization_disagreement_reason": "only one scale produced a mask and component quality is not strong enough for high localization confidence",
+            }
+        if tiny_low_agreement:
+            return {
+                "class_mask_consistency": "weak_tiny_low_agreement_mask",
+                "localized_evidence_status": "weak_disputed",
+                "final_decision": "tampered_suspect_weak_localization",
+                "final_decision_confidence": "medium",
+                "localization_confidence": "low",
+                "localization_disagreement_reason": f"final mask area {area:.4f}% is below {tiny_area_threshold:.4f}% with low cross-scale agreement",
             }
         if uncertain:
             return {
@@ -388,12 +480,16 @@ def class_mask_consistency(primary_class: str, tampered_score: float, selected: 
                 "localized_evidence_status": "found_uncertain",
                 "final_decision": "tampered_suspect_localized_uncertain",
                 "final_decision_confidence": "medium",
+                "localization_confidence": "medium",
+                "localization_disagreement_reason": "mask selection was marked uncertain",
             }
         return {
             "class_mask_consistency": "consistent",
             "localized_evidence_status": "found",
             "final_decision": "tampered_with_localized_evidence",
             "final_decision_confidence": "high",
+            "localization_confidence": "high",
+            "localization_disagreement_reason": disagreement_reason,
         }
     if area > 0.0 and tampered_score >= high_threshold:
         return {
@@ -401,6 +497,8 @@ def class_mask_consistency(primary_class: str, tampered_score: float, selected: 
             "localized_evidence_status": "suppressed_non_tampered_high_score",
             "final_decision": "non_tampered_class_with_tamper_mask_uncertainty",
             "final_decision_confidence": "low",
+            "localization_confidence": "low",
+            "localization_disagreement_reason": "non-tampered class retained uncertainty because tampered score is very high",
         }
     if area > 0.0:
         return {
@@ -408,17 +506,27 @@ def class_mask_consistency(primary_class: str, tampered_score: float, selected: 
             "localized_evidence_status": "suppressed_non_tampered_mask",
             "final_decision": "non_tampered_mask_suppressed",
             "final_decision_confidence": "medium",
+            "localization_confidence": "none",
+            "localization_disagreement_reason": "non-tampered class with active mask suppressed by consistency gate",
         }
     return {
         "class_mask_consistency": "consistent",
         "localized_evidence_status": "not_applicable",
         "final_decision": primary_class,
         "final_decision_confidence": "high" if tampered_score < high_threshold else "medium",
+        "localization_confidence": localization_confidence,
+        "localization_disagreement_reason": disagreement_reason,
     }
 
 
 def explanation_reason(primary_class: str, family: str, tampered_score: float, selection: dict[str, Any], gate: dict[str, Any]) -> str:
     area = float(selection.get("stats", {}).get("mask_area_pct", 0.0))
+    if gate.get("class_mask_consistency") == "cross_scale_mask_disagreement":
+        return "Both models predict tampered, but long224 and long256 localize different regions; localized evidence is disputed."
+    if gate.get("localized_evidence_status") == "weak_single_scale":
+        return "long256 predicts tampered, but only one scale produced a usable mask; localized evidence is weak."
+    if gate.get("localized_evidence_status") == "weak_disputed":
+        return "long256 predicts tampered, but the retained mask is tiny and cross-scale agreement is low; localized evidence is weak."
     if gate["final_decision"] == "tampered_with_localized_evidence":
         return f"long256 predicts tampered with localized mask evidence covering {area:.2f}% of the image; family estimate is {family}."
     if gate["final_decision"] == "tampered_suspect_no_localized_evidence":
@@ -559,6 +667,7 @@ def run_dual_scale_report(config: dict[str, Any]) -> dict[str, Any]:
     selection = select_final_mask(long224, long256, config)
     gate = class_mask_consistency(long256["class"], long256["tampered_score"], selection, config)
     reason = explanation_reason(long256["class"], long256["family"], long256["tampered_score"], selection, gate)
+    primary_class_conf = float(long256.get("class_conf", {}).get(long256["class"], 0.0))
     artifacts: dict[str, Any] = {}
     if config.get("write_visual_artifacts", True) is True:
         artifacts = write_visual_artifacts(config, long224, long256, selection)
@@ -570,6 +679,10 @@ def run_dual_scale_report(config: dict[str, Any]) -> dict[str, Any]:
         "long224": {key: value for key, value in long224.items() if key != "processed_mask"},
         "long256": {key: value for key, value in long256.items() if key != "processed_mask"},
         **gate,
+        "classification_confidence": primary_class_conf,
+        "localization_confidence": gate.get("localization_confidence", "none"),
+        "localization_disagreement_reason": gate.get("localization_disagreement_reason", "none"),
+        "mask_selection_reason": selection["reason"],
         "explanation_reason": reason,
         "final_mask_area_pct": float(selection["stats"]["mask_area_pct"]),
         "final_mask_stats": selection["stats"],

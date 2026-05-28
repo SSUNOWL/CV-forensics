@@ -152,7 +152,13 @@ def mine_cases_from_records(records: list[dict[str, Any]], config: dict[str, Any
                 low = dict(item)
                 low["localization_iou"] = float(iou)
                 hard_positive_low_iou.append(low)
-        if record.get("class_mask_consistency") in {"inconsistent", "partial"} or ("tampered" in pred and mask_area <= 0.0) or (gt in {"real", "full_synthetic"} and mask_area > 0.0):
+        if record.get("class_mask_consistency") in {
+            "inconsistent",
+            "partial",
+            "cross_scale_mask_disagreement",
+            "single_scale_localization_only",
+            "weak_tiny_low_agreement_mask",
+        } or ("tampered" in pred and mask_area <= 0.0) or (gt in {"real", "full_synthetic"} and mask_area > 0.0):
             inconsistent.append(item)
     return {
         "hard_negative_real": hard_real,
@@ -192,6 +198,8 @@ def _record_from_dual_report(sample: dict[str, Any], report: dict[str, Any]) -> 
         "final_mask_area_pct": float(report.get("final_mask_area_pct", 0.0)),
         "class_mask_consistency": report.get("class_mask_consistency"),
         "localized_evidence_status": report.get("localized_evidence_status"),
+        "localization_confidence": report.get("localization_confidence"),
+        "localization_disagreement_reason": report.get("localization_disagreement_reason"),
     }
 
 
@@ -219,6 +227,8 @@ def _single_checkpoint_record(config: dict[str, Any], sample: dict[str, Any], ch
         "final_mask_area_pct": float(selection["stats"]["mask_area_pct"]),
         "class_mask_consistency": gate["class_mask_consistency"],
         "localized_evidence_status": gate["localized_evidence_status"],
+        "localization_confidence": gate.get("localization_confidence"),
+        "localization_disagreement_reason": gate.get("localization_disagreement_reason"),
     }
 
 

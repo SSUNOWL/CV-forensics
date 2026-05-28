@@ -17,8 +17,10 @@ if str(SRC_ROOT) not in sys.path:
 
 from cv_forensics.pre_sns_v3_dual_scale_report import (  # noqa: E402
     class_mask_consistency,
+    explanation_reason,
     mask_stats,
     postprocess_mask,
+    resize_binary_mask_nearest,
     select_final_mask,
     validate_dual_report_config,
 )
@@ -104,6 +106,9 @@ def test_config_validation() -> None:
         mcfg = mining_config(tmp)
         assert_true(validate_hard_mining_config(mcfg) == [], "mining config should pass")
         badm = copy.deepcopy(mcfg)
+        badm["max_samples"] = 0
+        assert_true(validate_hard_mining_config(badm), "max_samples=0 must be rejected")
+        badm = copy.deepcopy(mcfg)
         badm["manifest_path"] = str(tmp / "unapproved" / "manifest.json")
         assert_true(validate_hard_mining_config(badm), "manifest outside approved roots should fail")
 
@@ -135,6 +140,79 @@ def test_consistency_logic() -> None:
     }
     gate = class_mask_consistency("real", 0.30, active_selection)
     assert_true(gate["localized_evidence_status"] == "suppressed_non_tampered_mask", "non-tampered active mask should suppress")
+
+
+def test_disputed_dual_tampered_masks_are_not_high_confidence() -> None:
+    m224 = [0] * 16
+    m256 = [0] * 16
+    for idx in (0, 1, 4, 5):
+        m224[idx] = 1
+    for idx in (10, 11, 14, 15):
+        m256[idx] = 1
+    cfg = {"agreement_iou_threshold": 0.15, "cross_scale_disagreement_iou_threshold": 0.05}
+    selected = select_final_mask(model(m224, "tampered", 0.9), model(m256, "tampered", 0.92), cfg)
+    assert_true(selected["agreement_iou"] == 0.0, "fixture should have zero mask agreement")
+    gate = class_mask_consistency("tampered", 0.92, selected, cfg)
+    assert_true(gate["final_decision"] == "tampered_suspect_disputed_localization", "low agreement must be disputed")
+    assert_true(gate["final_decision_confidence"] != "high", "disputed localization must not be high confidence")
+    assert_true(gate["localized_evidence_status"] in {"disputed", "weak_disputed"}, "localized evidence should be disputed")
+    assert_true(gate["class_mask_consistency"] == "cross_scale_mask_disagreement", "consistency should mention cross-scale disagreement")
+    reason = explanation_reason("tampered", "GAN", 0.92, selected, gate)
+    assert_true("localize different regions" in reason, "explanation should mention disagreement")
+
+
+def test_cross_scale_disagreement_with_different_mask_shapes() -> None:
+    m224 = [0] * 16
+    for idx in (0, 1, 4, 5):
+        m224[idx] = 1
+    m256 = [0] * 64
+    for idx in (54, 55, 62, 63):
+        m256[idx] = 1
+    resized = resize_binary_mask_nearest(m224, (4, 4), (8, 8))
+    assert_true(len(resized) == 64, "resized mask should match long256 grid")
+    selected = select_final_mask(
+        {"class": "tampered", "tampered_score": 0.91, "processed_mask": m224, "mask_shape": (4, 4)},
+        {"class": "tampered", "tampered_score": 0.94, "processed_mask": m256, "mask_shape": (8, 8)},
+        {"agreement_iou_threshold": 0.15, "cross_scale_disagreement_iou_threshold": 0.05},
+    )
+    gate = class_mask_consistency("tampered", 0.94, selected, {"cross_scale_disagreement_iou_threshold": 0.05})
+    assert_true(selected["agreement_iou"] == 0.0, "different-shape masks should still compare on common grid")
+    assert_true(gate["class_mask_consistency"] == "cross_scale_mask_disagreement", "shape mismatch should not hide disagreement")
+
+
+def test_tiny_mask_low_agreement_downgrades_localization() -> None:
+    m224 = [0] * 1024
+    m256 = [0] * 1024
+    m224[0] = 1
+    m256[-1] = 1
+    cfg = {
+        "agreement_iou_threshold": 0.15,
+        "cross_scale_disagreement_iou_threshold": 0.05,
+        "tiny_mask_area_pct_threshold": 0.15,
+    }
+    selected = select_final_mask(
+        {"class": "tampered", "tampered_score": 0.91, "processed_mask": m224, "mask_shape": (32, 32)},
+        {"class": "tampered", "tampered_score": 0.93, "processed_mask": m256, "mask_shape": (32, 32)},
+        cfg,
+    )
+    gate = class_mask_consistency("tampered", 0.93, selected, cfg)
+    assert_true(gate["localized_evidence_status"] == "weak_disputed", "tiny low-agreement mask should be weak_disputed")
+    assert_true(gate["final_decision_confidence"] != "high", "tiny low-agreement mask must not be high confidence")
+    assert_true(gate["localization_confidence"] == "low", "tiny low-agreement localization should be low confidence")
+
+
+def test_single_scale_mask_downgrades_without_strong_component() -> None:
+    m224 = [0] * 100
+    m256 = [0] * 100
+    m256[10] = 1
+    selected = select_final_mask(
+        {"class": "tampered", "tampered_score": 0.88, "processed_mask": m224, "mask_shape": (10, 10)},
+        {"class": "tampered", "tampered_score": 0.91, "processed_mask": m256, "mask_shape": (10, 10)},
+        {"strong_component_area_pct_threshold": 5.0},
+    )
+    gate = class_mask_consistency("tampered", 0.91, selected, {"strong_component_area_pct_threshold": 5.0})
+    assert_true(gate["localized_evidence_status"] == "weak_single_scale", "single weak mask should downgrade localization")
+    assert_true(gate["final_decision_confidence"] != "high", "single weak mask must not be high confidence")
 
 
 def model(mask: list[int], cls: str = "tampered", score: float = 0.7) -> dict:
@@ -191,6 +269,10 @@ def main() -> int:
         test_config_validation,
         test_mask_component_cleanup,
         test_consistency_logic,
+        test_disputed_dual_tampered_masks_are_not_high_confidence,
+        test_cross_scale_disagreement_with_different_mask_shapes,
+        test_tiny_mask_low_agreement_downgrades_localization,
+        test_single_scale_mask_downgrades_without_strong_component,
         test_dual_scale_mask_selection_rules,
         test_hard_mining_summary_schema_and_no_repo_writes,
     ):
