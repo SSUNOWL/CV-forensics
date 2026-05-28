@@ -25,6 +25,7 @@ from cv_forensics.pre_sns_v3_dual_scale_report import (  # noqa: E402
     validate_dual_report_config,
 )
 from cv_forensics.pre_sns_v3_hard_mining import (  # noqa: E402
+    _records_from_checkpoint_runs,
     mining_summary_schema_ok,
     mine_cases_from_records,
     validate_hard_mining_config,
@@ -124,6 +125,33 @@ def test_mask_component_cleanup() -> None:
     stats = mask_stats(cleaned, shape)
     assert_true(stats["component_count"] == 1, "tiny component should be removed")
     assert_true(stats["mask_area_px"] == 9, "large component should remain")
+
+
+def test_mask_stats_edge_cases() -> None:
+    empty = mask_stats([], (0, 0))
+    assert_true(empty["component_count"] == 0, "empty mask should have no components")
+    assert_true(empty["mask_stats_malformed"] is True, "empty invalid shape should be marked malformed")
+
+    single = mask_stats([0, 0, 0, 0, 1, 0, 0, 0, 0], (3, 3))
+    assert_true(single["component_count"] == 1, "single active pixel should be one component")
+    assert_true(single["largest_component_area_px"] == 1, "single active pixel largest component mismatch")
+
+    all_active = mask_stats([1] * 9, (3, 3))
+    assert_true(all_active["component_count"] == 1, "all-active mask should be one component")
+    assert_true(all_active["mask_area_pct"] == 100.0, "all-active area should be 100%")
+
+    isolated = mask_stats([1, 0, 1, 0, 0, 0, 1, 0, 1], (3, 3))
+    assert_true(isolated["component_count"] == 4, "diagonal isolated pixels should be separate 4-neighbor components")
+
+    one_by_n = mask_stats([1, 0, 1], (3, 1))
+    assert_true(one_by_n["component_count"] == 2, "1xN separated pixels should be separate components")
+    n_by_one = mask_stats([1, 0, 1], (1, 3))
+    assert_true(n_by_one["component_count"] == 2, "Nx1 separated pixels should be separate components")
+
+    malformed = mask_stats([1, 0], (3, 3))
+    assert_true(malformed["mask_stats_malformed"] is True, "shape mismatch should be marked malformed")
+    assert_true(malformed["mask_width"] == 3 and malformed["mask_height"] == 3, "malformed stats should preserve requested shape")
+    assert_true(malformed["mask_area_px"] == 1, "malformed short mask should be padded safely")
 
 
 def test_consistency_logic() -> None:
@@ -264,10 +292,57 @@ def test_hard_mining_summary_schema_and_no_repo_writes() -> None:
             assert_true(not str(Path(path).resolve()).startswith(str(REPO_ROOT.resolve())), "mining output wrote inside repo")
 
 
+def test_hard_mining_records_failed_cases_and_continues() -> None:
+    with tempfile.TemporaryDirectory(dir=temp_parent()) as raw:
+        tmp = Path(raw)
+        cfg = mining_config(tmp)
+        cfg.update(
+            {
+                "use_manifest_predictions": False,
+                "long224_checkpoint_path": str(tmp / "models" / "long224.pt"),
+                "long256_checkpoint_path": str(tmp / "models" / "long256.pt"),
+                "fail_fast": False,
+            }
+        )
+        manifest = {
+            "samples": [
+                {"sample_id": "ok", "class_label": "tampered", "image_path": str(tmp / "inputs" / "ok.png")},
+                {"sample_id": "bad", "class_label": "tampered", "image_path": str(tmp / "inputs" / "bad.png")},
+            ]
+        }
+
+        def report_runner(report_config: dict) -> dict:
+            if report_config["image_path"].endswith("bad.png"):
+                raise RuntimeError("synthetic report failure")
+            return {
+                "long256": {"tampered_score": 0.9},
+                "final_decision": "tampered_with_localized_evidence",
+                "final_mask_area_pct": 2.0,
+                "class_mask_consistency": "consistent",
+                "localized_evidence_status": "found",
+                "localization_confidence": "high",
+                "localization_disagreement_reason": "none",
+            }
+
+        records, failed = _records_from_checkpoint_runs(manifest, cfg, report_runner=report_runner)
+        assert_true(len(records) == 1, "one successful record should be retained")
+        assert_true(len(failed) == 1, "one failed sample should be recorded")
+        assert_true(failed[0]["sample_id"] == "bad", "failed sample id mismatch")
+        mined = mine_cases_from_records(records, cfg)
+        mined["failed_cases"] = failed
+        summary = write_mining_outputs(cfg["approved_output_root"], mined, cfg)
+        failed_path = Path(summary["output_paths"]["failed_cases"])
+        assert_true(summary["failed_case_count"] == 1, "summary failed_case_count mismatch")
+        assert_true(failed_path.exists(), "failed_cases.json should be written")
+        failed_payload = json.loads(failed_path.read_text(encoding="utf-8"))
+        assert_true(failed_payload[0]["exception"].startswith("RuntimeError"), "failed exception should be captured")
+
+
 def main() -> int:
     for test in (
         test_config_validation,
         test_mask_component_cleanup,
+        test_mask_stats_edge_cases,
         test_consistency_logic,
         test_disputed_dual_tampered_masks_are_not_high_confidence,
         test_cross_scale_disagreement_with_different_mask_shapes,
@@ -275,6 +350,7 @@ def main() -> int:
         test_single_scale_mask_downgrades_without_strong_component,
         test_dual_scale_mask_selection_rules,
         test_hard_mining_summary_schema_and_no_repo_writes,
+        test_hard_mining_records_failed_cases_and_continues,
     ):
         test()
     print("PRE_SNS_V3_DUAL_SCALE_REPORT_AND_MINING_TESTS_OK")

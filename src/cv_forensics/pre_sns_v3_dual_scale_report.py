@@ -221,45 +221,102 @@ def binary_mask(mask: Any, threshold: float = 0.5, mask_size: tuple[int, int] | 
     return [1 if value >= threshold else 0 for value in flat], shape
 
 
-def mask_components(active: list[int], shape: tuple[int, int]) -> list[list[int]]:
-    width, height = shape
-    visited = [False] * len(active)
+def _empty_mask_stats(width: int = 0, height: int = 0, malformed: bool = False, warning: str = "") -> dict[str, Any]:
+    return {
+        "mask_area_px": 0,
+        "mask_area_pct": 0.0,
+        "component_count": 0,
+        "largest_component_area_px": 0,
+        "largest_component_area_pct": 0.0,
+        "mask_width": int(max(width, 0)),
+        "mask_height": int(max(height, 0)),
+        "mask_stats_malformed": bool(malformed),
+        "mask_stats_warning": warning,
+    }
+
+
+def _normalize_binary_grid(active: Any, shape: tuple[int, int] | list[int] | None) -> tuple[list[list[int]], int, int, bool, str]:
+    malformed = False
+    warnings: list[str] = []
+    try:
+        width = int(shape[0]) if shape and len(shape) >= 1 else 0
+        height = int(shape[1]) if shape and len(shape) >= 2 else 0
+    except (TypeError, ValueError):
+        width, height = 0, 0
+        malformed = True
+        warnings.append("invalid shape")
+    flat = [1 if value else 0 for value in flatten_mask(active)]
+    if width <= 0 or height <= 0:
+        malformed = True
+        warnings.append("non-positive shape")
+        return [], max(width, 0), max(height, 0), malformed, "; ".join(warnings)
+    expected = width * height
+    if expected <= 0:
+        malformed = True
+        warnings.append("empty shape")
+        return [], width, height, malformed, "; ".join(warnings)
+    if len(flat) != expected:
+        malformed = True
+        warnings.append(f"mask length {len(flat)} does not match shape area {expected}")
+        if len(flat) < expected:
+            flat = flat + [0] * (expected - len(flat))
+        else:
+            flat = flat[:expected]
+    grid = [flat[row * width : (row + 1) * width] for row in range(height)]
+    return grid, width, height, malformed, "; ".join(warnings)
+
+
+def mask_components(active: Any, shape: tuple[int, int]) -> list[list[int]]:
+    grid, width, height, _malformed, _warning = _normalize_binary_grid(active, shape)
+    if width <= 0 or height <= 0 or not grid:
+        return []
+    visited = [[False for _ in range(width)] for _ in range(height)]
     components: list[list[int]] = []
-    for index, value in enumerate(active):
-        if not value or visited[index]:
-            continue
-        queue: deque[int] = deque([index])
-        visited[index] = True
-        component: list[int] = []
-        while queue:
-            current = queue.popleft()
-            component.append(current)
-            x = current % width
-            y = current // width
-            for nx, ny in ((x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)):
-                if nx < 0 or ny < 0 or nx >= width or ny >= height:
+    for y in range(height):
+        for x in range(width):
+            if not grid[y][x] or visited[y][x]:
+                continue
+            queue: deque[tuple[int, int]] = deque([(x, y)])
+            visited[y][x] = True
+            component: list[int] = []
+            while queue:
+                current_x, current_y = queue.popleft()
+                if current_x < 0 or current_y < 0 or current_x >= width or current_y >= height:
                     continue
-                neighbor = ny * width + nx
-                if active[neighbor] and not visited[neighbor]:
-                    visited[neighbor] = True
-                    queue.append(neighbor)
-        components.append(component)
+                component.append(current_y * width + current_x)
+                for nx, ny in ((current_x - 1, current_y), (current_x + 1, current_y), (current_x, current_y - 1), (current_x, current_y + 1)):
+                    if nx < 0 or ny < 0 or nx >= width or ny >= height:
+                        continue
+                    if grid[ny][nx] and not visited[ny][nx]:
+                        visited[ny][nx] = True
+                        queue.append((nx, ny))
+            components.append(component)
     return components
 
 
-def mask_stats(active: list[int], shape: tuple[int, int]) -> dict[str, Any]:
-    total = max(len(active), 1)
-    comps = mask_components(active, shape)
+def mask_stats(active: Any, shape: tuple[int, int]) -> dict[str, Any]:
+    grid, width, height, malformed, warning = _normalize_binary_grid(active, shape)
+    if width <= 0 or height <= 0 or not grid:
+        return _empty_mask_stats(width, height, malformed=True, warning=warning or "empty or invalid mask")
+    total = width * height
+    active_count = sum(1 for row in grid for value in row if value)
+    if active_count == 0:
+        stats = _empty_mask_stats(width, height, malformed, warning)
+        stats["mask_stats_malformed"] = bool(malformed)
+        stats["mask_stats_warning"] = warning
+        return stats
+    comps = mask_components([value for row in grid for value in row], (width, height))
     largest = max((len(component) for component in comps), default=0)
-    active_count = sum(1 for value in active if value)
     return {
         "mask_area_px": int(active_count),
         "mask_area_pct": float(active_count / total * 100.0),
         "component_count": int(len(comps)),
         "largest_component_area_px": int(largest),
         "largest_component_area_pct": float(largest / total * 100.0),
-        "mask_width": int(shape[0]),
-        "mask_height": int(shape[1]),
+        "mask_width": int(width),
+        "mask_height": int(height),
+        "mask_stats_malformed": bool(malformed),
+        "mask_stats_warning": warning,
     }
 
 
@@ -268,7 +325,8 @@ def _neighbor_count(active: list[int], shape: tuple[int, int], x: int, y: int) -
     count = 0
     for ny in range(max(0, y - 1), min(height, y + 2)):
         for nx in range(max(0, x - 1), min(width, x + 2)):
-            if active[ny * width + nx]:
+            index = ny * width + nx
+            if 0 <= index < len(active) and active[index]:
                 count += 1
     return count
 
@@ -291,14 +349,16 @@ def _erode(active: list[int], shape: tuple[int, int]) -> list[int]:
 
 
 def postprocess_mask(active: list[int], shape: tuple[int, int], min_component_area_px: int = 0, keep_top_k_components: int | None = None, morphology: str = "none") -> list[int]:
-    processed = [1 if value else 0 for value in active]
+    grid, width, height, _malformed, _warning = _normalize_binary_grid(active, shape)
+    processed = [value for row in grid for value in row] if grid else []
+    normalized_shape = (width, height)
     if morphology == "open":
-        processed = _dilate(_erode(processed, shape), shape)
+        processed = _dilate(_erode(processed, normalized_shape), normalized_shape)
     elif morphology == "close":
-        processed = _erode(_dilate(processed, shape), shape)
+        processed = _erode(_dilate(processed, normalized_shape), normalized_shape)
     elif morphology not in {"none", "", None}:
         raise DualScaleReportError("morphology must be none, open, or close")
-    comps = sorted(mask_components(processed, shape), key=len, reverse=True)
+    comps = sorted(mask_components(processed, normalized_shape), key=len, reverse=True)
     if min_component_area_px > 0:
         comps = [component for component in comps if len(component) >= min_component_area_px]
     if keep_top_k_components is not None and keep_top_k_components > 0:

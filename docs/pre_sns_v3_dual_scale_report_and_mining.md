@@ -57,9 +57,12 @@ Clean red overlay images do not draw text. The comparison sheet may contain labe
 - `hard_negative_non_tampered.json`
 - `hard_positive_tampered_low_iou.json`
 - `class_mask_inconsistent_cases.json`
+- `failed_cases.json`
 - `mining_summary.json`
 
-The miner supports positive integer `max_samples` and does not modify training data. `max_samples=0` is rejected; do not use zero to mean all samples. If a local wrapper wants "all samples", it must count the manifest samples first and pass that positive count into the approved config. The miner can mine from manifest-provided predictions for guarded dry analysis; checkpoint-backed mining should use calibrated report outputs as records.
+The miner supports positive integer `max_samples` and does not modify training data. `max_samples=0` is rejected; do not use zero to mean all samples. If a local wrapper wants "all samples", it must count the manifest samples first and pass that positive count into the approved config.
+
+Checkpoint-backed mining defaults to `fail_fast: false`. If one sample fails during report generation, the miner appends `sample_id`, `class_label`, `image_path`, exception text, and traceback tail to `failed_cases.json`, continues with the remaining samples, and reports `failed_case_count` plus the failed-cases path in `mining_summary.json`. Set `fail_fast: true` only when debugging a specific crash. The miner can also mine from manifest-provided predictions for guarded dry analysis.
 
 ## Guardrails
 

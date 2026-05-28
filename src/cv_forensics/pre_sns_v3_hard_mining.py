@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import traceback
 from pathlib import Path
 from typing import Any
 
@@ -93,6 +94,8 @@ def validate_hard_mining_config(raw: dict[str, Any], require_exists: bool = Fals
             value = raw[field]
             if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0.0 <= float(value) <= 1.0:
                 errors.append(_err(f"{field} must be a number in [0, 1]"))
+    if "fail_fast" in raw and raw.get("fail_fast") not in {True, False}:
+        errors.append(_err("fail_fast must be boolean when present"))
     if kind == APPROVED_KIND and raw.get("execution_mode") != "approved_local_pre_sns_v3_hard_mining":
         errors.append(_err("execution_mode must be approved_local_pre_sns_v3_hard_mining"))
     if kind == EXAMPLE_KIND and raw.get("execution_mode") != "example_only":
@@ -232,47 +235,66 @@ def _single_checkpoint_record(config: dict[str, Any], sample: dict[str, Any], ch
     }
 
 
-def _records_from_checkpoint_runs(manifest: dict[str, Any], config: dict[str, Any]) -> list[dict[str, Any]]:
+def _failure_record(sample: dict[str, Any], index: int, exc: BaseException) -> dict[str, Any]:
+    return {
+        "sample_id": sample.get("sample_id") or sample.get("id") or f"sample_{index:06d}",
+        "class_label": sample.get("class_label"),
+        "image_path": sample.get("image_path"),
+        "exception": f"{type(exc).__name__}: {exc}",
+        "traceback_tail": traceback.format_exc().strip().splitlines()[-8:],
+    }
+
+
+def _records_from_checkpoint_runs(manifest: dict[str, Any], config: dict[str, Any], report_runner: Any = run_dual_scale_report) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     records: list[dict[str, Any]] = []
+    failed_cases: list[dict[str, Any]] = []
     samples = [sample for sample in manifest.get("samples", [])[: int(config["max_samples"])] if isinstance(sample, dict)]
     has224 = bool(config.get("long224_checkpoint_path"))
     has256 = bool(config.get("long256_checkpoint_path"))
     for index, sample in enumerate(samples):
         if not isinstance(sample.get("image_path"), str):
             continue
-        if has224 and has256:
-            report_config = {
-                "schema_version": config.get("schema_version", "1.0"),
-                "config_kind": REPORT_APPROVED_KIND,
-                "execution_mode": "approved_local_pre_sns_v3_dual_report",
-                "image_path": sample["image_path"],
-                "long224_checkpoint_path": config["long224_checkpoint_path"],
-                "long256_checkpoint_path": config["long256_checkpoint_path"],
-                "approved_input_roots": config["approved_input_roots"],
-                "approved_checkpoint_roots": config.get("approved_checkpoint_roots", []),
-                "approved_output_root": str(_real(config["approved_output_root"]) / _sample_id(sample, index)),
-                "device": config.get("device", "cpu"),
-                "mask_threshold": config.get("mask_threshold", 0.5),
-                "min_component_area_px": config.get("min_component_area_px", 0),
-                "keep_top_k_components": config.get("keep_top_k_components"),
-                "morphology": config.get("morphology", "none"),
-                "agreement_iou_threshold": config.get("agreement_iou_threshold", 0.15),
-                "uncertain_tampered_score": config.get("uncertain_tampered_score", 0.35),
-                "very_high_tampered_score": config.get("very_high_tampered_score", 0.85),
-                "write_report": False,
-                "write_visual_artifacts": False,
-                "no_download": True,
-                "no_network": True,
-                "no_training": True,
-                "no_checkpoint_writes": True,
-                "no_sns_augmentation": True,
-            }
-            records.append(_record_from_dual_report(sample, run_dual_scale_report(report_config)))
-        elif has256:
-            records.append(_single_checkpoint_record(config, sample, "long256_checkpoint_path"))
-        elif has224:
-            records.append(_single_checkpoint_record(config, sample, "long224_checkpoint_path"))
-    return records
+        try:
+            if has224 and has256:
+                report_config = {
+                    "schema_version": config.get("schema_version", "1.0"),
+                    "config_kind": REPORT_APPROVED_KIND,
+                    "execution_mode": "approved_local_pre_sns_v3_dual_report",
+                    "image_path": sample["image_path"],
+                    "long224_checkpoint_path": config["long224_checkpoint_path"],
+                    "long256_checkpoint_path": config["long256_checkpoint_path"],
+                    "approved_input_roots": config["approved_input_roots"],
+                    "approved_checkpoint_roots": config.get("approved_checkpoint_roots", []),
+                    "approved_output_root": str(_real(config["approved_output_root"]) / _sample_id(sample, index)),
+                    "device": config.get("device", "cpu"),
+                    "mask_threshold": config.get("mask_threshold", 0.5),
+                    "min_component_area_px": config.get("min_component_area_px", 0),
+                    "keep_top_k_components": config.get("keep_top_k_components"),
+                    "morphology": config.get("morphology", "none"),
+                    "agreement_iou_threshold": config.get("agreement_iou_threshold", 0.15),
+                    "cross_scale_disagreement_iou_threshold": config.get("cross_scale_disagreement_iou_threshold", 0.05),
+                    "tiny_mask_area_pct_threshold": config.get("tiny_mask_area_pct_threshold", 0.15),
+                    "strong_component_area_pct_threshold": config.get("strong_component_area_pct_threshold", 0.5),
+                    "uncertain_tampered_score": config.get("uncertain_tampered_score", 0.35),
+                    "very_high_tampered_score": config.get("very_high_tampered_score", 0.85),
+                    "write_report": False,
+                    "write_visual_artifacts": False,
+                    "no_download": True,
+                    "no_network": True,
+                    "no_training": True,
+                    "no_checkpoint_writes": True,
+                    "no_sns_augmentation": True,
+                }
+                records.append(_record_from_dual_report(sample, report_runner(report_config)))
+            elif has256:
+                records.append(_single_checkpoint_record(config, sample, "long256_checkpoint_path"))
+            elif has224:
+                records.append(_single_checkpoint_record(config, sample, "long224_checkpoint_path"))
+        except Exception as exc:
+            failed_cases.append(_failure_record(sample, index, exc))
+            if config.get("fail_fast") is True:
+                raise
+    return records, failed_cases
 
 
 def write_mining_outputs(output_root: str | Path, mined: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
@@ -285,18 +307,21 @@ def write_mining_outputs(output_root: str | Path, mined: dict[str, Any], config:
         "hard_negative_non_tampered": "hard_negative_non_tampered.json",
         "hard_positive_tampered_low_iou": "hard_positive_tampered_low_iou.json",
         "class_mask_inconsistent_cases": "class_mask_inconsistent_cases.json",
+        "failed_cases": "failed_cases.json",
     }
     output_paths: dict[str, str] = {}
     for key, filename in filenames.items():
         path = root / filename
         with open(path, "w", encoding="utf-8") as handle:
-            json.dump(mined[key], handle, indent=2, sort_keys=True)
+            json.dump(mined.get(key, []), handle, indent=2, sort_keys=True)
             handle.write("\n")
         output_paths[key] = str(path)
+    case_filenames = {key: filename for key, filename in filenames.items() if key != "failed_cases"}
     summary = {
         "marker": MARKER,
         "schema_version": config.get("schema_version", "1.0"),
-        "counts": {key: len(mined[key]) for key in filenames},
+        "counts": {key: len(mined[key]) for key in case_filenames},
+        "failed_case_count": len(mined.get("failed_cases", [])),
         "thresholds": {
             "tampered_score_threshold": float(config.get("tampered_score_threshold", 0.5)),
             "low_iou_threshold": float(config.get("low_iou_threshold", 0.3)),
@@ -327,9 +352,11 @@ def run_hard_mining(config: dict[str, Any]) -> dict[str, Any]:
     manifest = _load_manifest(config["manifest_path"])
     if config.get("use_manifest_predictions") is True:
         records = _records_from_manifest_predictions(manifest, int(config["max_samples"]))
+        failed_cases: list[dict[str, Any]] = []
     else:
-        records = _records_from_checkpoint_runs(manifest, config)
+        records, failed_cases = _records_from_checkpoint_runs(manifest, config)
     mined = mine_cases_from_records(records, config)
+    mined["failed_cases"] = failed_cases
     return write_mining_outputs(config["approved_output_root"], mined, config)
 
 
@@ -339,6 +366,8 @@ def mining_summary_schema_ok(summary: dict[str, Any]) -> bool:
         and isinstance(summary.get("counts"), dict)
         and isinstance(summary.get("thresholds"), dict)
         and isinstance(summary.get("output_paths"), dict)
+        and isinstance(summary.get("failed_case_count"), int)
+        and "failed_cases" in summary.get("output_paths", {})
         and summary.get("no_download") is True
         and summary.get("no_network") is True
         and summary.get("no_training") is True
