@@ -1,0 +1,30 @@
+{
+  "schema_version": "1.0",
+  "config_kind": "approved_pre_sns_v3_dual_report",
+  "execution_mode": "approved_local_pre_sns_v3_dual_report",
+  "image_path": "/home/rlatjswo/.codex/memories/cv_forensics_inputs/example_image.png",
+  "long224_checkpoint_path": "/home/rlatjswo/.codex/memories/cv_forensics_models/long224_pre_sns_v3.pt",
+  "long256_checkpoint_path": "/home/rlatjswo/.codex/memories/cv_forensics_models/long256_pre_sns_v3.pt",
+  "approved_input_roots": [
+    "/home/rlatjswo/.codex/memories/cv_forensics_inputs"
+  ],
+  "approved_checkpoint_roots": [
+    "/home/rlatjswo/.codex/memories/cv_forensics_models"
+  ],
+  "approved_output_root": "/home/rlatjswo/.codex/memories/cv_forensics_reports/pre_sns_v3_dual_report_example",
+  "device": "cpu",
+  "mask_threshold": 0.5,
+  "min_component_area_px": 4,
+  "keep_top_k_components": 3,
+  "morphology": "none",
+  "agreement_iou_threshold": 0.15,
+  "uncertain_tampered_score": 0.35,
+  "very_high_tampered_score": 0.85,
+  "write_report": true,
+  "write_visual_artifacts": true,
+  "no_download": true,
+  "no_network": true,
+  "no_training": true,
+  "no_checkpoint_writes": true,
+  "no_sns_augmentation": true
+}

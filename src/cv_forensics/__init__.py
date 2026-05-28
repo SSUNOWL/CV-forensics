@@ -22,6 +22,8 @@ from . import pre_sns_visualization
 from . import pre_sns_evaluation
 from . import pre_sns_baseline_report
 from . import pre_sns_meaningful_training_v2
+from . import pre_sns_v3_dual_scale_report
+from . import pre_sns_v3_hard_mining
 from .inference_stub import check_fake_input_config_safety
 from .metrics import check_toy_metric_config_safety
 
@@ -50,4 +52,6 @@ __all__ = [
     "pre_sns_evaluation",
     "pre_sns_baseline_report",
     "pre_sns_meaningful_training_v2",
+    "pre_sns_v3_dual_scale_report",
+    "pre_sns_v3_hard_mining",
 ]

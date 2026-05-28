@@ -1,0 +1,24 @@
+{
+  "schema_version": "1.0",
+  "config_kind": "approved_pre_sns_v3_hard_mining",
+  "execution_mode": "approved_local_pre_sns_v3_hard_mining",
+  "manifest_path": "/home/rlatjswo/.codex/memories/cv_forensics_inputs/pre_sns_v3_eval_manifest.json",
+  "long224_checkpoint_path": "/home/rlatjswo/.codex/memories/cv_forensics_models/long224_pre_sns_v3.pt",
+  "long256_checkpoint_path": "/home/rlatjswo/.codex/memories/cv_forensics_models/long256_pre_sns_v3.pt",
+  "approved_input_roots": [
+    "/home/rlatjswo/.codex/memories/cv_forensics_inputs"
+  ],
+  "approved_checkpoint_roots": [
+    "/home/rlatjswo/.codex/memories/cv_forensics_models"
+  ],
+  "approved_output_root": "/home/rlatjswo/.codex/memories/cv_forensics_reports/pre_sns_v3_hard_mining_example",
+  "max_samples": 100,
+  "tampered_score_threshold": 0.5,
+  "low_iou_threshold": 0.3,
+  "use_manifest_predictions": false,
+  "no_download": true,
+  "no_network": true,
+  "no_training": true,
+  "no_checkpoint_writes": true,
+  "no_sns_augmentation": true
+}
