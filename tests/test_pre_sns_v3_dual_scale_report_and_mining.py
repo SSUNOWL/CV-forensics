@@ -97,6 +97,12 @@ def test_config_validation() -> None:
         bad = copy.deepcopy(cfg)
         bad["no_network"] = False
         assert_true(validate_dual_report_config(bad), "missing no_network guardrail should fail")
+        compat = copy.deepcopy(cfg)
+        compat.pop("no_checkpoint_writes")
+        assert_true(validate_dual_report_config(compat) == [], "legacy dual config without no_checkpoint_writes should pass")
+        bad = copy.deepcopy(cfg)
+        bad["no_checkpoint_writes"] = False
+        assert_true(validate_dual_report_config(bad), "explicit no_checkpoint_writes=false should fail")
         bad = copy.deepcopy(cfg)
         bad["approved_output_root"] = str(REPO_ROOT / "reports" / "bad")
         assert_true(validate_dual_report_config(bad), "repo output root should fail")

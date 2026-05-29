@@ -117,7 +117,6 @@ def validate_dual_report_config(raw: dict[str, Any], require_exists: bool = Fals
         "no_download",
         "no_network",
         "no_training",
-        "no_checkpoint_writes",
         "no_sns_augmentation",
     )
     for field in required:
@@ -126,9 +125,11 @@ def validate_dual_report_config(raw: dict[str, Any], require_exists: bool = Fals
     kind = raw.get("config_kind")
     if kind not in {APPROVED_KIND, EXAMPLE_KIND}:
         errors.append(_err("config_kind must be approved_pre_sns_v3_dual_report or example_symbolic"))
-    for flag in ("no_download", "no_network", "no_training", "no_checkpoint_writes", "no_sns_augmentation"):
+    for flag in ("no_download", "no_network", "no_training", "no_sns_augmentation"):
         if raw.get(flag) is not True:
             errors.append(_err(f"{flag} must be true"))
+    if raw.get("no_checkpoint_writes", True) is not True:
+        errors.append(_err("no_checkpoint_writes must be true when present"))
     roots = raw.get("approved_input_roots")
     if not isinstance(roots, list) or not roots or not all(isinstance(root, str) for root in roots):
         errors.append(_err("approved_input_roots must be a non-empty list of absolute paths"))
