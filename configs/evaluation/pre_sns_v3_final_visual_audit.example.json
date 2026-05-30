@@ -1,0 +1,46 @@
+{
+  "schema_version": "1.0",
+  "config_kind": "approved_pre_sns_v3_final_visual_audit",
+  "execution_mode": "approved_local_pre_sns_v3_final_visual_audit",
+  "approved_real_data_access": true,
+  "manifest_path": "/home/rlatjswo/cvf_local_store/pre_sns_manifests_0035_clean/pre_sns_large_manifest_val_clean.local.json",
+  "sample_list_path": null,
+  "hard_cases_path": null,
+  "long256_checkpoint_path": "/home/rlatjswo/cvf_checkpoints/pre_sns_v3_clean_long256_20260528_123113/best_checkpoint.pt",
+  "tile_localizer_checkpoint_path": "/home/rlatjswo/.codex/memories/pre_sns_0042_0044_actual/0043_train_ckpt/best_tile_localizer.pt",
+  "approved_input_roots": [
+    "/home/rlatjswo/cvf_local_store",
+    "/home/rlatjswo/.codex/memories/pre_sns_0042_0044_actual/inputs"
+  ],
+  "approved_checkpoint_roots": [
+    "/home/rlatjswo/cvf_checkpoints",
+    "/home/rlatjswo/.codex/memories/pre_sns_0042_0044_actual/0043_train_ckpt"
+  ],
+  "output_root": "/home/rlatjswo/.codex/memories/pre_sns_0045_final_visual_audit_example",
+  "max_samples": 30,
+  "balance_classes": true,
+  "per_class_max": 10,
+  "seed": 45,
+  "device": "cpu",
+  "tile_size": 512,
+  "tile_stride": 512,
+  "tile_activation_tau": 0.5,
+  "mask_threshold": 0.5,
+  "max_tiles": 16,
+  "aggregation_mode": "average",
+  "max_final_mask_area_pct": 35.0,
+  "min_final_mask_area_pct": 0.01,
+  "max_tile_vs_baseline_area_ratio": 4.0,
+  "require_tile_improves_gt_when_gt_available": true,
+  "fallback_to_baseline_when_tile_unreliable": true,
+  "suppress_mask_for_non_tampered": true,
+  "ready_macro_f1_threshold": 0.85,
+  "ready_tampered_recall_threshold": 0.85,
+  "ready_real_fpr_threshold": 0.1,
+  "ready_failed_red_mask_rate_threshold": 0.2,
+  "no_download": true,
+  "no_network": true,
+  "no_training": true,
+  "no_sns_augmentation": true
+}
+
