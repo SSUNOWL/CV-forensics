@@ -1,0 +1,35 @@
+{
+  "schema_version": "1.0",
+  "config_kind": "approved_pre_sns_v3_tile_localizer_training",
+  "execution_mode": "approved_local_pre_sns_v3_tile_localizer_training",
+  "required_approval_text": "I_APPROVE_PRE_SNS_V3_TILE_LOCALIZER_TRAINING",
+  "user_approval_text": "I_APPROVE_PRE_SNS_V3_TILE_LOCALIZER_TRAINING",
+  "tile_manifest_path": "/home/rlatjswo/cvf_local_store/pre_sns_v3_gt_iou_tile_builder/tile_localization_manifest.json",
+  "approved_input_roots": [
+    "/home/rlatjswo/cvf_local_store"
+  ],
+  "approved_run_root": "/home/rlatjswo/cvf_runs/pre_sns_v3_tile_localizer_example",
+  "approved_checkpoint_root": "/home/rlatjswo/cvf_ckpts/pre_sns_v3_tile_localizer_example",
+  "device": "cpu",
+  "seed": 43,
+  "tile_size": 512,
+  "epochs": 2,
+  "batch_size": 4,
+  "learning_rate": 0.001,
+  "weight_decay": 0.0001,
+  "base_channels": 8,
+  "max_tiles_train": 256,
+  "max_tiles_val": 64,
+  "gradient_clip_norm": 1.0,
+  "bce_loss_weight": 1.0,
+  "dice_loss_weight": 1.0,
+  "focal_loss_weight": 0.0,
+  "empty_mask_loss_weight": 1.0,
+  "threshold_values": [0.25, 0.35, 0.5, 0.65, 0.75],
+  "negative_activation_area_pct": 0.1,
+  "no_write_dry_run": true,
+  "no_download": true,
+  "no_network": true,
+  "no_sns_augmentation": true
+}
+
