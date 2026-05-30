@@ -29,6 +29,7 @@ from . import pre_sns_v3_gt_iou_mining
 from . import pre_sns_v3_tile_localization
 from . import pre_sns_v3_long256_tile_report
 from . import pre_sns_v3_long256_tile_local_run
+from . import pre_sns_v3_gt_iou_tile_builder
 from .inference_stub import check_fake_input_config_safety
 from .metrics import check_toy_metric_config_safety
 
@@ -64,4 +65,5 @@ __all__ = [
     "pre_sns_v3_tile_localization",
     "pre_sns_v3_long256_tile_report",
     "pre_sns_v3_long256_tile_local_run",
+    "pre_sns_v3_gt_iou_tile_builder",
 ]

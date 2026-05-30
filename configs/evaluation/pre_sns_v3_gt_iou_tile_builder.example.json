@@ -1,0 +1,43 @@
+{
+  "schema_version": "1.0",
+  "config_kind": "approved_pre_sns_v3_gt_iou_tile_builder",
+  "execution_mode": "approved_local_pre_sns_v3_gt_iou_tile_builder",
+  "approved_real_data_access": true,
+  "train_manifest_path": "/home/rlatjswo/cvf_local_store/pre_sns_manifests_0035_clean/pre_sns_large_manifest_train_clean.local.json",
+  "long256_checkpoint_path": "/home/rlatjswo/cvf_checkpoints/pre_sns_v3_clean_long256_20260528_123113/best_checkpoint.pt",
+  "long224_checkpoint_path": null,
+  "refined_checkpoint_path": null,
+  "gt_iou_records_path": null,
+  "hard_negative_records_path": null,
+  "approved_input_roots": [
+    "/home/rlatjswo/cvf_local_store"
+  ],
+  "approved_checkpoint_roots": [
+    "/home/rlatjswo/cvf_checkpoints"
+  ],
+  "output_root": "/home/rlatjswo/cvf_runs/pre_sns_v3_gt_iou_tile_builder_example",
+  "source_split": "train",
+  "max_samples": 200,
+  "tile_size": 512,
+  "positive_jitter_count": 2,
+  "negative_sample_count": 100,
+  "negative_random_count": 1,
+  "hard_negative_count": 100,
+  "severe_oversample_factor": 3,
+  "low_iou_oversample_factor": 2,
+  "seed": 23,
+  "threshold_tau": 0.5,
+  "mask_threshold": 0.5,
+  "tiny_gt_area_pct_threshold": 0.25,
+  "underseg_ratio_threshold": 0.5,
+  "overseg_ratio_threshold": 2.0,
+  "fragmented_component_threshold": 4,
+  "visual_top_n": 12,
+  "run_long256_report": true,
+  "write_cropped_images": false,
+  "no_download": true,
+  "no_network": true,
+  "no_training": true,
+  "no_checkpoint_writes": true,
+  "no_sns_augmentation": true
+}
