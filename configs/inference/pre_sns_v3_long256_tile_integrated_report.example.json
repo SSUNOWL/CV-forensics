@@ -1,0 +1,36 @@
+{
+  "schema_version": "1.0",
+  "config_kind": "approved_pre_sns_v3_long256_tile_integrated_report",
+  "execution_mode": "approved_local_pre_sns_v3_long256_tile_integrated_report",
+  "long256_checkpoint_path": "/home/rlatjswo/cvf_checkpoints/pre_sns_v3_clean_long256_20260528_123113/best_checkpoint.pt",
+  "tile_localizer_checkpoint_path": "/home/rlatjswo/cvf_ckpts/pre_sns_v3_tile_localizer/best_tile_localizer.pt",
+  "image_path": "/home/rlatjswo/cvf_local_store/pre_sns_examples/example_image.png",
+  "gt_mask_path": null,
+  "sample_list_path": null,
+  "approved_input_roots": [
+    "/home/rlatjswo/cvf_local_store"
+  ],
+  "approved_checkpoint_roots": [
+    "/home/rlatjswo/cvf_checkpoints",
+    "/home/rlatjswo/cvf_ckpts"
+  ],
+  "output_root": "/home/rlatjswo/cvf_runs/pre_sns_v3_long256_tile_integrated_report_example",
+  "device": "cpu",
+  "tile_size": 512,
+  "tile_stride": 256,
+  "tile_activation_tau": 0.5,
+  "mask_threshold": 0.5,
+  "max_tiles": 256,
+  "aggregation_mode": "average",
+  "tile_reliability_min_area_pct": 0.0,
+  "suppress_mask_for_non_tampered": true,
+  "postprocess": {
+    "enabled": false,
+    "remove_small_components": false
+  },
+  "no_download": true,
+  "no_network": true,
+  "no_training": true,
+  "no_sns_augmentation": true
+}
+
