@@ -1,0 +1,31 @@
+{
+  "schema_version": "1.0",
+  "config_kind": "approved_pre_sns_v3_tile_localization",
+  "execution_mode": "approved_local_pre_sns_v3_tile_localization",
+  "manifest_path": "/home/rlatjswo/.codex/memories/cv_forensics_inputs/pre_sns_v3_tile_manifest.json",
+  "gt_iou_mining_records_path": "/home/rlatjswo/.codex/memories/cv_forensics_inputs/localization_iou_records.jsonl",
+  "long256_checkpoint_path": "/home/rlatjswo/.codex/memories/cv_forensics_models/long256_pre_sns_v3.pt",
+  "approved_input_roots": [
+    "/home/rlatjswo/.codex/memories/cv_forensics_inputs"
+  ],
+  "approved_checkpoint_roots": [
+    "/home/rlatjswo/.codex/memories/cv_forensics_models"
+  ],
+  "output_root": "/home/rlatjswo/.codex/memories/cv_forensics_reports/pre_sns_v3_tile_localization_example",
+  "max_samples": 50,
+  "tile_size": 256,
+  "tile_stride": 128,
+  "crop_context_px": 32,
+  "high_res_max_size": 768,
+  "merge_mode": "union",
+  "tampered_suspect_threshold": 0.5,
+  "improvement_epsilon": 0.0,
+  "preview_tile_count": 4,
+  "visual_top_n_per_bucket": 0,
+  "no_download": true,
+  "no_network": true,
+  "no_training": true,
+  "dry_run_only": true,
+  "no_checkpoint_writes": true,
+  "no_sns_augmentation": true
+}
