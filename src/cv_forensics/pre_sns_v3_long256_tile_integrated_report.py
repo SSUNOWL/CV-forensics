@@ -105,11 +105,21 @@ def validate_integrated_report_config(raw: dict[str, Any], require_exists: bool 
         value = raw.get(field)
         if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
             errors.append(_err(f"{field} must be a positive integer"))
-    for field in ("tile_activation_tau", "mask_threshold", "tile_reliability_min_area_pct"):
+    for field in (
+        "tile_activation_tau",
+        "mask_threshold",
+        "tile_reliability_min_area_pct",
+        "max_final_mask_area_pct",
+        "min_final_mask_area_pct",
+        "max_tile_vs_baseline_area_ratio",
+    ):
         if field in raw:
             value = raw[field]
             if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)) or float(value) < 0:
                 errors.append(_err(f"{field} must be a non-negative finite number"))
+    for field in ("require_tile_improves_gt_when_gt_available", "fallback_to_baseline_when_tile_unreliable"):
+        if field in raw and raw[field] not in {True, False}:
+            errors.append(_err(f"{field} must be boolean"))
     if raw.get("aggregation_mode", "average") not in {"average", "max"}:
         errors.append(_err("aggregation_mode must be average or max"))
     return errors
@@ -322,6 +332,37 @@ def _localized_status(activated: bool, final_decision: str, final_area: float) -
     return "uncertain_empty_mask"
 
 
+def tile_reliability_reasons(
+    config: dict[str, Any],
+    primary_class: str,
+    tile_mask: list[int],
+    baseline_mask: list[int],
+    gt_mask: list[int] | None = None,
+) -> list[str]:
+    if str(primary_class) != "tampered":
+        return []
+    reasons: list[str] = []
+    tile_area = mask_area_pct(tile_mask)
+    baseline_area = mask_area_pct(baseline_mask)
+    max_area = float(config.get("max_final_mask_area_pct", 35.0))
+    min_area = float(config.get("min_final_mask_area_pct", 0.0))
+    max_ratio = float(config.get("max_tile_vs_baseline_area_ratio", 4.0))
+    if tile_area <= 0.0:
+        reasons.append("empty_tile_mask")
+    if max_area > 0.0 and tile_area > max_area:
+        reasons.append("tile_mask_area_too_large")
+    if min_area > 0.0 and tile_area < min_area:
+        reasons.append("tile_mask_area_too_small")
+    if baseline_area > 0.0 and max_ratio > 0.0 and tile_area / baseline_area > max_ratio:
+        reasons.append("tile_vs_baseline_area_ratio_too_large")
+    if gt_mask is not None and bool(config.get("require_tile_improves_gt_when_gt_available", False)):
+        baseline_iou = iou_score(gt_mask, baseline_mask)
+        tile_iou = iou_score(gt_mask, tile_mask)
+        if tile_iou < baseline_iou:
+            reasons.append("tile_iou_worse_than_baseline")
+    return reasons
+
+
 def _localization_confidence(final_area: float, tile_count: int, activated: bool) -> float:
     if not activated:
         return 0.0
@@ -353,9 +394,20 @@ def build_integrated_record(config: dict[str, Any], sample: dict[str, Any], inde
         predictions = run_tile_localizer(config, sample, width, height, tiles)
         tile_values = aggregate_tile_values(width, height, predictions, str(config.get("aggregation_mode", "average")))
         tile_mask = threshold_mask(tile_values, float(config.get("mask_threshold", 0.5)))
+    gt_mask = None
+    gt_path = sample.get("gt_mask_path") or config.get("gt_mask_path")
+    if gt_path:
+        gt_mask = _load_mask_from_path(Image, str(gt_path), width, height, float(config.get("mask_threshold", 0.5)))
+    elif sample.get("gt_mask") is not None or config.get("gt_mask") is not None:
+        gt_mask = _flatten_mask(sample.get("gt_mask", config.get("gt_mask")), width, height, float(config.get("mask_threshold", 0.5)))
+    reliability_reasons = tile_reliability_reasons(config, str(long_report["class"]), tile_mask, baseline_mask, gt_mask) if activated else []
+    fallback_unreliable = bool(config.get("fallback_to_baseline_when_tile_unreliable", True)) and bool(reliability_reasons)
     if not activated and bool(config.get("suppress_mask_for_non_tampered", True)):
         final_mask = [0] * (width * height)
         final_mask_source = "suppressed_non_tampered"
+    elif activated and fallback_unreliable and str(long_report["class"]) == "tampered":
+        final_mask = baseline_mask
+        final_mask_source = "baseline_long256_tile_unreliable"
     elif activated and sum(tile_mask) > 0:
         final_mask = tile_mask
         final_mask_source = "tile_localizer"
@@ -368,14 +420,9 @@ def build_integrated_record(config: dict[str, Any], sample: dict[str, Any], inde
     final_area = mask_area_pct(final_mask)
     baseline_area = mask_area_pct(baseline_mask)
     final_decision = "tampered_suspect_no_localized_evidence" if activated and str(long_report["class"]) == "tampered" and final_area <= 0.0 else str(long_report["class"])
-    gt_mask = None
-    gt_path = sample.get("gt_mask_path") or config.get("gt_mask_path")
-    if gt_path:
-        gt_mask = _load_mask_from_path(Image, str(gt_path), width, height, float(config.get("mask_threshold", 0.5)))
-    elif sample.get("gt_mask") is not None or config.get("gt_mask") is not None:
-        gt_mask = _flatten_mask(sample.get("gt_mask", config.get("gt_mask")), width, height, float(config.get("mask_threshold", 0.5)))
     comparison = compare_with_gt(gt_mask, baseline_mask, final_mask) if gt_mask is not None else {}
-    evidence_status = _localized_status(activated, final_decision, final_area)
+    tile_raw_comparison = compare_with_gt(gt_mask, baseline_mask, tile_mask) if gt_mask is not None and activated else {}
+    evidence_status = "tile_unreliable_baseline_retained" if final_mask_source == "baseline_long256_tile_unreliable" else _localized_status(activated, final_decision, final_area)
     return {
         "marker": MARKER,
         "sample_id": str(sample.get("sample_id") or f"sample_{index:06d}"),
@@ -397,9 +444,12 @@ def build_integrated_record(config: dict[str, Any], sample: dict[str, Any], inde
         "localized_evidence_status": evidence_status,
         "localization_confidence": _localization_confidence(final_area, len(tiles), activated),
         "final_mask_source": final_mask_source,
+        "tile_reliability_reasons": reliability_reasons,
+        "tile_raw_mask_area_pct": mask_area_pct(tile_mask),
         "baseline_mask_stats": mask_stats(baseline_mask, (width, height)),
         "final_mask_stats": mask_stats(final_mask, (width, height)),
         "gt_comparison": comparison,
+        "tile_raw_gt_comparison": tile_raw_comparison,
         "reason": _reason(str(long_report["class"]), str(long_report["family"]), activated, evidence_status),
         "_shape": (width, height),
         "_baseline_mask": baseline_mask,
@@ -582,4 +632,3 @@ def json_safe(value: Any) -> Any:
     if isinstance(value, float):
         return float(value) if math.isfinite(value) else None
     return value
-

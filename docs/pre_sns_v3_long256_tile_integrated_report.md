@@ -43,8 +43,12 @@ The report records:
 - `final_vs_baseline_mask_iou`
 - `localized_evidence_status`
 - `localization_confidence`
+- `tile_reliability_reasons`
 - `final_decision`
 - `reason`
 
 When a GT mask is provided, it also reports baseline IoU/Dice, tile-final IoU/Dice, and IoU/Dice deltas.
 
+## Tile Reliability
+
+The integrated report does not blindly replace the clean long256 baseline mask. For tampered cases, configurable reliability checks reject empty, too-small, too-large, or baseline-disproportionate tile masks. When GT is available, the report can require the tile mask to improve over the baseline. If the tile mask is unreliable and fallback is enabled, the report keeps the clean long256 baseline mask and sets `final_mask_source` to `baseline_long256_tile_unreliable`.

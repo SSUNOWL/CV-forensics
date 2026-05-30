@@ -10,6 +10,8 @@ Clean long256 remains the global detector. The tile localizer is a conditional h
 
 The expected input is the 0042 `tile_localization_manifest.json`, containing positive GT-centered or jittered crops, low-IoU hard crops, negative real/full_synthetic crops, and optional hard-negative false-positive crops.
 
+For real training beyond smoke tests, use a larger 0042 tile manifest than the tiny validation run: increase 0042 `max_samples`, include both real and synthetic negatives, include hard negatives when available, keep positive jitter/oversampling enabled, and train for multiple epochs. This remains pre-SNS training and must write checkpoints only outside the repository.
+
 ## Guardrails
 
 - `config_kind`: `approved_pre_sns_v3_tile_localizer_training`
@@ -53,4 +55,3 @@ Under `approved_checkpoint_root`:
 ## Metrics
 
 Validation reports `tile_mean_iou`, `tile_median_iou`, `tile_mean_dice`, `positive_tile_iou`, `negative_tile_false_activation_rate`, `empty_mask_precision_proxy`, a mask area percent summary, threshold sweep, and `selected_mask_threshold`.
-

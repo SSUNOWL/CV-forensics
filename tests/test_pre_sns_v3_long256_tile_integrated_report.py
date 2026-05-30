@@ -22,6 +22,7 @@ from cv_forensics.pre_sns_v3_long256_tile_integrated_report import (  # noqa: E4
     compare_with_gt,
     run_integrated_report,
     threshold_mask,
+    tile_reliability_reasons,
     tile_grid,
     validate_integrated_report_config,
 )
@@ -84,6 +85,11 @@ def safe_config(root: Path, image_path: Path, mask_path: Path | None = None) -> 
         "mask_threshold": 0.5,
         "max_tiles": 16,
         "aggregation_mode": "average",
+        "max_final_mask_area_pct": 35.0,
+        "min_final_mask_area_pct": 0.0,
+        "max_tile_vs_baseline_area_ratio": 4.0,
+        "require_tile_improves_gt_when_gt_available": False,
+        "fallback_to_baseline_when_tile_unreliable": True,
         "suppress_mask_for_non_tampered": True,
         "fixture_long256_report": {"class": "tampered", "family": "Other", "tampered_score": 0.9, "baseline_mask": [0] * 70},
         "fixture_tile_mask": [1 if 2 <= (idx % 10) <= 5 and 2 <= (idx // 10) <= 5 else 0 for idx in range(70)],
@@ -125,6 +131,38 @@ def test_decision_logic_activation_and_suppression() -> None:
     assert_equal(record["final_mask_area_pct"], 0.0, "non-tampered suppresses mask")
 
 
+def test_unreliable_tile_mask_falls_back_to_baseline() -> None:
+    root = temp_root("cvf_integrated_reliable_")
+    image_path, mask_path = write_fixture_image(root)
+    gt = [1 if 2 <= (idx % 10) <= 5 and 2 <= (idx // 10) <= 5 else 0 for idx in range(70)]
+    cfg = safe_config(root, image_path, mask_path)
+    cfg["fixture_long256_report"] = {"class": "tampered", "family": "Other", "tampered_score": 0.9, "baseline_mask": gt}
+    cfg["fixture_tile_mask"] = [1] * 70
+    record = build_integrated_record(cfg, {"image_path": str(image_path)}, 0)
+    assert_equal(record["final_mask_source"], "baseline_long256_tile_unreliable", "overactive tile falls back")
+    assert_equal(record["localized_evidence_status"], "tile_unreliable_baseline_retained", "unreliable status")
+    assert_true("tile_mask_area_too_large" in record["tile_reliability_reasons"], "area reason")
+    assert_equal(record["gt_comparison"]["tile_final_iou"], 1.0, "baseline retained against gt")
+
+
+def test_gt_regression_reliability_reason() -> None:
+    gt = [1, 1, 0, 0]
+    baseline = [1, 1, 0, 0]
+    tile = [1, 1, 1, 1]
+    reasons = tile_reliability_reasons(
+        {
+            "max_final_mask_area_pct": 100.0,
+            "max_tile_vs_baseline_area_ratio": 0.0,
+            "require_tile_improves_gt_when_gt_available": True,
+        },
+        "tampered",
+        tile,
+        baseline,
+        gt,
+    )
+    assert_true("tile_iou_worse_than_baseline" in reasons, "gt regression reason")
+
+
 def test_validator_guardrails() -> None:
     example_path = REPO_ROOT / "configs" / "inference" / "pre_sns_v3_long256_tile_integrated_report.example.json"
     example = json.loads(example_path.read_text())
@@ -164,6 +202,8 @@ def main() -> int:
         test_tile_grid_boundary_and_aggregation,
         test_threshold_and_gt_metrics,
         test_decision_logic_activation_and_suppression,
+        test_unreliable_tile_mask_falls_back_to_baseline,
+        test_gt_regression_reliability_reason,
         test_validator_guardrails,
         test_run_integrated_report_no_repo_writes,
     ]
@@ -175,4 +215,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

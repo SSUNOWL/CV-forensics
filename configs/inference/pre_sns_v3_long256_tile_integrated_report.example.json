@@ -23,6 +23,11 @@
   "max_tiles": 256,
   "aggregation_mode": "average",
   "tile_reliability_min_area_pct": 0.0,
+  "max_final_mask_area_pct": 35.0,
+  "min_final_mask_area_pct": 0.01,
+  "max_tile_vs_baseline_area_ratio": 4.0,
+  "require_tile_improves_gt_when_gt_available": true,
+  "fallback_to_baseline_when_tile_unreliable": true,
   "suppress_mask_for_non_tampered": true,
   "postprocess": {
     "enabled": false,
@@ -33,4 +38,3 @@
   "no_training": true,
   "no_sns_augmentation": true
 }
-
