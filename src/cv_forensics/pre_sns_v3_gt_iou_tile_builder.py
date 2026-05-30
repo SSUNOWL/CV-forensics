@@ -401,12 +401,14 @@ def positive_tile_records(record: dict[str, Any], config: dict[str, Any], rng: r
         factor = max(factor, int(config.get("low_iou_oversample_factor", 2)))
     repeated = boxes * factor
     records: list[dict[str, Any]] = []
+    tile_size = int(config.get("tile_size", 512))
     for index, box in enumerate(repeated):
         records.append({
             "source_sample_id": record.get("sample_id"),
             "source_image_path": record.get("image_path"),
             "source_mask_path": record.get("mask_path"),
             "crop_box": box,
+            "tile_size": tile_size,
             "tile_class": "positive_tampered",
             "mining_bucket": bucket,
             "failure_types": record.get("failure_types", []),
@@ -445,6 +447,7 @@ def negative_tile_records(samples: list[dict[str, Any]], config: dict[str, Any],
                 "source_sample_id": sample_id(sample, sample_index),
                 "source_image_path": sample.get("image_path"),
                 "crop_box": [x1, y1, x1 + crop_w, y1 + crop_h],
+                "tile_size": tile_size,
                 "tile_class": tile_class,
                 "expected_mask_type": "empty_mask",
                 "record_index": crop_index,
@@ -470,6 +473,7 @@ def hard_negative_tile_records(hard_records: list[dict[str, Any]], config: dict[
             "source_sample_id": item.get("sample_id") or f"hard_negative_{index:06d}",
             "source_image_path": item.get("image_path"),
             "crop_box": crop_box_centered(cx, cy, width, height, tile_size),
+            "tile_size": tile_size,
             "tile_class": "hard_negative",
             "expected_mask_type": "empty_mask",
             "mining_bucket": item.get("mining_bucket") or item.get("failure_type") or "hard_negative_false_positive",
@@ -725,6 +729,7 @@ def run_gt_iou_tile_builder(config: dict[str, Any]) -> dict[str, Any]:
         output_paths[bucket_name] = _write_json(output_root / f"{bucket_name}.json", [_public_record(item) for item in items])
     output_paths["tile_localization_manifest"] = _write_json(output_root / "tile_localization_manifest.json", tile_manifest)
     output_paths["tile_manifest_summary"] = _write_json(output_root / "tile_manifest_summary.json", tile_summary)
+    output_paths["artifact_manifest"] = str(output_root / "artifact_manifest.json")
     artifact_manifest = {
         "marker": MARKER,
         "output_paths": output_paths,
@@ -734,7 +739,7 @@ def run_gt_iou_tile_builder(config: dict[str, Any]) -> dict[str, Any]:
         "no_training": True,
         "no_sns_augmentation": True,
     }
-    output_paths["artifact_manifest"] = _write_json(output_root / "artifact_manifest.json", artifact_manifest)
+    _write_json(output_root / "artifact_manifest.json", artifact_manifest)
     return {
         "marker": MARKER,
         "output_root": str(output_root),

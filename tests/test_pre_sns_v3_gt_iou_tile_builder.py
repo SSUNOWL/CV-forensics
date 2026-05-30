@@ -124,6 +124,7 @@ def test_crop_boxes_and_positive_records() -> None:
     pos = positive_tile_records(record, {"tile_size": 4, "positive_jitter_count": 1, "severe_oversample_factor": 2}, __import__("random").Random(1))
     assert_true(pos, "positive records")
     assert_equal(pos[0]["tile_class"], "positive_tampered", "positive class")
+    assert_equal(pos[0]["tile_size"], 4, "positive tile size")
     assert_equal(pos[0]["expected_mask_type"], "cropped_gt_mask", "positive mask type")
 
 
@@ -135,8 +136,10 @@ def test_negative_and_hard_negative_records() -> None:
     ]
     neg = negative_tile_records(samples, {"tile_size": 4, "negative_random_count": 1}, rng)
     assert_equal({item["tile_class"] for item in neg}, {"negative_real", "negative_synthetic"}, "negative classes")
+    assert_equal({item["tile_size"] for item in neg}, {4}, "negative tile sizes")
     hard = hard_negative_tile_records([{"sample_id": "h0", "image_path": "/tmp/h.png", "width": 8, "height": 8, "pred_bbox": {"x0": 6, "y0": 6, "x1": 8, "y1": 8}}], {"tile_size": 4, "hard_negative_count": 1}, rng)
     assert_equal(hard[0]["tile_class"], "hard_negative", "hard class")
+    assert_equal(hard[0]["tile_size"], 4, "hard tile size")
     assert_equal(hard[0]["expected_mask_type"], "empty_mask", "hard empty")
 
 
@@ -188,9 +191,11 @@ def test_run_builder_no_repo_writes_and_artifact_schema() -> None:
     assert_true(artifact_path.is_file(), "artifact manifest exists")
     artifact = json.loads(artifact_path.read_text())
     assert_true(artifact_manifest_schema_ok(artifact), "artifact schema")
+    assert_equal(artifact["output_paths"]["artifact_manifest"], str(artifact_path), "artifact self path")
     assert_equal(summary["marker"], MARKER, "summary marker")
     tile_manifest = json.loads((root / "reports" / "tile_builder" / "tile_localization_manifest.json").read_text())
     assert_true(tile_manifest["counts_by_tile_class"]["positive_tampered"] > 0, "positive count")
+    assert_true(all(record["tile_size"] == cfg["tile_size"] for record in tile_manifest["records"]), "manifest record tile sizes")
     assert_true(load_jsonl(root / "reports" / "tile_builder" / "gt_iou_train_records.jsonl"), "jsonl records")
 
 
