@@ -25,6 +25,7 @@ from . import pre_sns_meaningful_training_v2
 from . import pre_sns_v3_dual_scale_report
 from . import pre_sns_v3_hard_mining
 from . import pre_sns_v3_refinement
+from . import pre_sns_v3_gt_iou_mining
 from .inference_stub import check_fake_input_config_safety
 from .metrics import check_toy_metric_config_safety
 
@@ -56,4 +57,5 @@ __all__ = [
     "pre_sns_v3_dual_scale_report",
     "pre_sns_v3_hard_mining",
     "pre_sns_v3_refinement",
+    "pre_sns_v3_gt_iou_mining",
 ]
