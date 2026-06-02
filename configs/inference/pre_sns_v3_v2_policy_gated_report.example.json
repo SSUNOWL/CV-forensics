@@ -1,0 +1,31 @@
+{
+  "schema_version": "1.0",
+  "config_kind": "approved_pre_sns_v3_v2_policy_gated_report",
+  "execution_mode": "approved_local_pre_sns_v3_v2_policy_gated_report",
+  "long256_checkpoint_path": "/home/rlatjswo/.codex/memories/pre_sns_models/pre_sns_v3_long256.pt",
+  "tile_localizer_v2_checkpoint_path": "/home/rlatjswo/.codex/memories/pre_sns_models/pre_sns_v3_tile_localizer_v2.pt",
+  "image_path": "/home/rlatjswo/.codex/memories/pre_sns_inputs/example_image.png",
+  "gt_mask_path": "/home/rlatjswo/.codex/memories/pre_sns_inputs/example_gt_mask.png",
+  "sample_list_path": null,
+  "approved_input_roots": [
+    "/home/rlatjswo/.codex/memories/pre_sns_inputs"
+  ],
+  "approved_checkpoint_roots": [
+    "/home/rlatjswo/.codex/memories/pre_sns_models"
+  ],
+  "output_root": "/home/rlatjswo/.codex/memories/pre_sns_v2_policy_gated_report_example",
+  "device": "cpu",
+  "mask_threshold": 0.4,
+  "min_area_pct": 0.01,
+  "max_area_pct": 35.0,
+  "suppress_non_tampered_mask": true,
+  "fallback_to_baseline_on_v2_unreliable": true,
+  "component_filtering": false,
+  "min_largest_component_area_pct": null,
+  "max_component_count": null,
+  "max_samples": 1,
+  "no_download": true,
+  "no_network": true,
+  "no_training": true,
+  "no_sns_augmentation": true
+}
