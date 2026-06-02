@@ -27,6 +27,10 @@
   "gradient_accumulation_steps": 2,
   "gradient_clip_norm": 1.0,
   "mixed_precision": false,
+  "progress_log_interval_steps": 100,
+  "progress_write_json": true,
+  "progress_write_jsonl": true,
+  "stdout_progress_interval_steps": 100,
   "severe_iou_oversample_factor": 4,
   "low_iou_oversample_factor": 3,
   "weak_iou_oversample_factor": 2,
@@ -46,4 +50,3 @@
   "no_network": true,
   "no_sns_augmentation": true
 }
-

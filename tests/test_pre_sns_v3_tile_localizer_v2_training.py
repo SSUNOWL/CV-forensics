@@ -24,6 +24,7 @@ from src.cv_forensics.pre_sns_v3_tile_localizer_v2_training import (  # noqa: E4
     APPROVED_MODE,
     DRY_RUN_MARKER,
     MARKER,
+    PROGRESS_MARKER,
     TileLocalizerV2Dataset,
     compute_losses,
     evaluate,
@@ -122,6 +123,10 @@ def base_config(root: Path, manifest: Path, *, no_write: bool) -> dict:
         "gradient_accumulation_steps": 1,
         "gradient_clip_norm": 1.0,
         "mixed_precision": False,
+        "progress_log_interval_steps": 1,
+        "progress_write_json": True,
+        "progress_write_jsonl": True,
+        "stdout_progress_interval_steps": 1,
         "severe_iou_oversample_factor": 2,
         "low_iou_oversample_factor": 2,
         "weak_iou_oversample_factor": 2,
@@ -213,6 +218,9 @@ def test_validator_and_training_entrypoint_guards() -> None:
 
     cfg = base_config(root, manifest, no_write=True)
     assert validate_config(cfg, require_exists=False) == []
+    bad_interval = dict(cfg)
+    bad_interval["progress_log_interval_steps"] = -1
+    assert any("progress_log_interval_steps must be a positive integer" in err for err in validate_config(bad_interval, require_exists=False))
     bad = dict(cfg)
     bad["approved_run_root"] = str(REPO_ROOT / "tmp_v2_run")
     assert any("outside the repository" in err for err in validate_config(bad, require_exists=False))
@@ -222,6 +230,8 @@ def test_validator_and_training_entrypoint_guards() -> None:
     after = sorted(p.relative_to(root) for p in root.rglob("*"))
     assert result["marker"] == DRY_RUN_MARKER
     assert before == after
+    assert not (root / "run" / "progress.json").exists()
+    assert not (root / "run" / "progress.jsonl").exists()
 
 
 def test_tiny_actual_training_writes_expected_external_artifacts() -> None:
@@ -243,8 +253,17 @@ def test_tiny_actual_training_writes_expected_external_artifacts() -> None:
         "failure_bucket_metrics.json",
         "artifact_manifest.json",
         "config_snapshot.json",
+        "progress.json",
+        "progress.jsonl",
     ):
         assert (run_root / name).exists(), name
+    progress = json.loads((run_root / "progress.json").read_text(encoding="utf-8"))
+    assert progress["marker"] == PROGRESS_MARKER
+    assert isinstance(progress["percent_complete"], (int, float))
+    lines = [line for line in (run_root / "progress.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert len(lines) >= 1
+    first_line = json.loads(lines[0])
+    assert first_line["marker"] == PROGRESS_MARKER
     assert (run_root / "visual_samples").is_dir()
     assert (ckpt_root / "best_tile_localizer_v2.pt").exists()
     assert (ckpt_root / "latest_tile_localizer_v2.pt").exists()

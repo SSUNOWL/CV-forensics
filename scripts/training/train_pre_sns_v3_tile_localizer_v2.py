@@ -22,12 +22,11 @@ def main(argv: list[str]) -> int:
     try:
         result = run_training(load_config(argv[1]))
     except TileLocalizerV2TrainingError as exc:
-        print(f"PRE_SNS_V3_TILE_LOCALIZER_V2_TRAINING_FAILED: {exc}", file=sys.stderr)
+        print(f"PRE_SNS_V3_TILE_LOCALIZER_V2_TRAINING_FAILED: {exc}", file=sys.stderr, flush=True)
         return 1
-    print(json.dumps(json_safe(result), indent=2, sort_keys=True))
+    print(json.dumps(json_safe(result), indent=2, sort_keys=True), flush=True)
     return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main(sys.argv))
-

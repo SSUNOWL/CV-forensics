@@ -28,5 +28,13 @@ The trainer reads a 0042 tile manifest using `records`, `tiles`, or `tile_record
 
 Supported loss terms include BCE, Dice, Tversky, boundary loss, empty-mask loss, and false-activation area penalty for negatives. Oversampling can target severe/low/weak IoU buckets, hard negatives, and negative tiles.
 
-All outputs and checkpoints must be outside the repository.
+During non-dry-run training, the trainer writes visible progress under the approved external run root:
 
+- `progress.json` contains the latest progress snapshot.
+- `progress.jsonl` appends one JSON record per progress event.
+
+Each progress record uses the marker `PRE_SNS_V3_TILE_LOCALIZER_V2_TRAINING_PROGRESS` and includes epoch, step, percent complete, elapsed time, ETA, recent losses, optimizer learning rate, batch/tile settings, and CUDA memory statistics when CUDA is active.
+
+Progress is emitted at training start, periodic step intervals, epoch end, before validation, after validation, training completion, and handled failure paths when possible. The successful completion marker remains `PRE_SNS_V3_TILE_LOCALIZER_V2_TRAINING_OK`.
+
+All outputs and checkpoints must be outside the repository.

@@ -16,6 +16,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 MARKER = "PRE_SNS_V3_TILE_LOCALIZER_V2_TRAINING_OK"
 DRY_RUN_MARKER = "PRE_SNS_V3_TILE_LOCALIZER_V2_TRAINING_DRY_RUN_OK"
 CONFIG_OK_MARKER = "PRE_SNS_V3_TILE_LOCALIZER_V2_TRAINING_CONFIG_OK"
+PROGRESS_MARKER = "PRE_SNS_V3_TILE_LOCALIZER_V2_TRAINING_PROGRESS"
 APPROVED_KIND = "approved_pre_sns_v3_tile_localizer_v2_training"
 APPROVED_MODE = "approved_local_pre_sns_v3_tile_localizer_v2_training"
 APPROVAL_TEXT = "I_APPROVE_PRE_SNS_V3_TILE_LOCALIZER_V2_TRAINING"
@@ -70,6 +71,13 @@ def write_json(path: str | Path, value: Any) -> None:
         json.dump(json_safe(value), handle, indent=2, sort_keys=True)
         handle.write("\n")
     os.replace(tmp, target)
+
+
+def append_jsonl(path: str | Path, value: Any) -> None:
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with open(target, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(json_safe(value), sort_keys=True) + "\n")
 
 
 def _validate_abs(value: Any, field: str, *, require_file: bool = False, require_parent: bool = False) -> list[str]:
@@ -168,6 +176,12 @@ def validate_config(raw: dict[str, Any], require_exists: bool = False) -> list[s
             _nonnegative(raw, field, errors)
     if raw.get("learning_rate") == 0:
         errors.append(_err("learning_rate must be > 0"))
+    for field in ("progress_log_interval_steps", "stdout_progress_interval_steps"):
+        if field in raw:
+            _positive_int(raw, field, errors)
+    for field in ("progress_write_json", "progress_write_jsonl"):
+        if field in raw and raw.get(field) not in {True, False}:
+            errors.append(_err(f"{field} must be boolean"))
     return errors
 
 
@@ -419,6 +433,126 @@ def _safe_dirs(config: dict[str, Any]) -> tuple[Path, Path]:
     return run_root, ckpt_root
 
 
+def _progress_interval(config: dict[str, Any], field: str, default: int) -> int:
+    value = config.get(field, default)
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return default
+    return value
+
+
+def _gpu_memory_mb(torch: Any, device: str) -> tuple[float | None, float | None]:
+    if device != "cuda":
+        return None, None
+    allocated = float(torch.cuda.memory_allocated() / (1024.0 * 1024.0))
+    reserved = float(torch.cuda.memory_reserved() / (1024.0 * 1024.0))
+    return allocated, reserved
+
+
+def _loss_value(latest_losses: dict[str, float | None], field: str) -> float | None:
+    value = latest_losses.get(field)
+    return None if value is None else float(value)
+
+
+def _build_progress_payload(
+    torch: Any,
+    config: dict[str, Any],
+    run_root: Path,
+    device: str,
+    start_time: float,
+    epoch: int,
+    steps_per_epoch: int,
+    global_step: int,
+    total_steps: int,
+    latest_losses: dict[str, float | None],
+    *,
+    step_in_epoch: int = 0,
+    phase: str = "training",
+    error: str | None = None,
+) -> dict[str, Any]:
+    elapsed_sec = max(0.0, time.time() - start_time)
+    completed_steps = min(max(global_step, 0), max(total_steps, 1))
+    percent_complete = 100.0 * completed_steps / max(total_steps, 1)
+    eta_sec: float | None = None
+    if completed_steps > 0 and total_steps > completed_steps:
+        eta_sec = elapsed_sec * float(total_steps - completed_steps) / float(completed_steps)
+    gpu_allocated_mb, gpu_reserved_mb = _gpu_memory_mb(torch, device)
+    return {
+        "marker": PROGRESS_MARKER,
+        "train_name": str(config.get("train_name", run_root.name)),
+        "pid": os.getpid(),
+        "device": device,
+        "epoch": int(epoch),
+        "epochs": int(config["epochs"]),
+        "step_in_epoch": int(step_in_epoch),
+        "steps_per_epoch": int(steps_per_epoch),
+        "global_step": int(global_step),
+        "total_steps": int(total_steps),
+        "percent_complete": float(percent_complete),
+        "elapsed_sec": float(elapsed_sec),
+        "eta_sec": None if eta_sec is None else float(max(0.0, eta_sec)),
+        "latest_loss": _loss_value(latest_losses, "latest_loss"),
+        "latest_bce_loss": _loss_value(latest_losses, "latest_bce_loss"),
+        "latest_dice_loss": _loss_value(latest_losses, "latest_dice_loss"),
+        "latest_tversky_loss": _loss_value(latest_losses, "latest_tversky_loss"),
+        "latest_boundary_loss": _loss_value(latest_losses, "latest_boundary_loss"),
+        "latest_empty_mask_loss": _loss_value(latest_losses, "latest_empty_mask_loss"),
+        "learning_rate": float(config["learning_rate"]),
+        "batch_size": int(config["batch_size"]),
+        "tile_size": int(config["tile_size"]),
+        "max_tiles_train": int(config["max_tiles_train"]),
+        "max_tiles_val": int(config["max_tiles_val"]),
+        "gpu_memory_allocated_mb": gpu_allocated_mb,
+        "gpu_memory_reserved_mb": gpu_reserved_mb,
+        "phase": phase,
+        "error": error,
+    }
+
+
+def _write_progress_files(config: dict[str, Any], run_root: Path, payload: dict[str, Any]) -> None:
+    if bool(config.get("progress_write_json", True)):
+        write_json(run_root / "progress.json", payload)
+    if bool(config.get("progress_write_jsonl", True)):
+        append_jsonl(run_root / "progress.jsonl", payload)
+
+
+def _emit_progress(
+    torch: Any,
+    config: dict[str, Any],
+    run_root: Path,
+    device: str,
+    start_time: float,
+    epoch: int,
+    steps_per_epoch: int,
+    global_step: int,
+    total_steps: int,
+    latest_losses: dict[str, float | None],
+    *,
+    step_in_epoch: int = 0,
+    phase: str = "training",
+    error: str | None = None,
+    stdout: bool = True,
+) -> dict[str, Any]:
+    payload = _build_progress_payload(
+        torch,
+        config,
+        run_root,
+        device,
+        start_time,
+        epoch,
+        steps_per_epoch,
+        global_step,
+        total_steps,
+        latest_losses,
+        step_in_epoch=step_in_epoch,
+        phase=phase,
+        error=error,
+    )
+    _write_progress_files(config, run_root, payload)
+    if stdout:
+        print(json.dumps(json_safe(payload), sort_keys=True), flush=True)
+    return payload
+
+
 def run_training(config: dict[str, Any]) -> dict[str, Any]:
     assert_valid_config(config, require_exists=config.get("no_write_dry_run") is False)
     if config.get("no_write_dry_run") is True:
@@ -427,75 +561,264 @@ def run_training(config: dict[str, Any]) -> dict[str, Any]:
     if config["device"] == "cuda" and not torch.cuda.is_available():
         raise TileLocalizerV2TrainingError("device=cuda requested but CUDA is unavailable")
     device = "cuda" if config["device"] == "cuda" else "cpu"
+    run_root, ckpt_root = _safe_dirs(config)
     random.seed(int(config["seed"]))
     torch.manual_seed(int(config["seed"]))
-    train_records, val_records = split_records(load_tile_records(config["tile_manifest_path"]), config)
-    if not train_records or not val_records:
-        raise TileLocalizerV2TrainingError("training requires non-empty train and validation tiles")
-    train_ds = TileLocalizerV2Dataset(train_records, int(config["tile_size"]), torch, Image)
-    val_ds = TileLocalizerV2Dataset(val_records, int(config["tile_size"]), torch, Image)
-    model = build_pre_sns_v3_tile_localizer_v2(torch, tile_size=int(config["tile_size"]), input_feature_mode=str(config["input_feature_mode"]), base_channels=int(config.get("base_channels", 8)), boundary_head=bool(config.get("boundary_head", True)), confidence_head=bool(config.get("confidence_head", True))).to(device)
-    opt = torch.optim.AdamW(model.parameters(), lr=float(config["learning_rate"]), weight_decay=float(config.get("weight_decay", 0.0)))
-    use_amp = bool(config.get("mixed_precision", False)) and device == "cuda"
-    scaler = torch.cuda.amp.GradScaler() if use_amp else None
-    batch_size = int(config["batch_size"])
-    accum = int(config.get("gradient_accumulation_steps", 1))
-    steps = 0
-    train_metrics = []
     start = time.time()
-    for epoch in range(int(config["epochs"])):
-        order = list(range(len(train_ds)))
-        random.Random(int(config["seed"]) + epoch).shuffle(order)
-        losses: list[float] = []
-        model.train()
-        opt.zero_grad(set_to_none=True)
-        for offset in range(0, len(order), batch_size):
-            batch = make_batch(torch, train_ds, order[offset: offset + batch_size], device)
-            if use_amp:
-                with torch.cuda.amp.autocast():
+    latest_losses: dict[str, float | None] = {
+        "latest_loss": None,
+        "latest_bce_loss": None,
+        "latest_dice_loss": None,
+        "latest_tversky_loss": None,
+        "latest_boundary_loss": None,
+        "latest_empty_mask_loss": None,
+    }
+    train_records: list[dict[str, Any]] = []
+    val_records: list[dict[str, Any]] = []
+    steps = 0
+    try:
+        train_records, val_records = split_records(load_tile_records(config["tile_manifest_path"]), config)
+        if not train_records or not val_records:
+            raise TileLocalizerV2TrainingError("training requires non-empty train and validation tiles")
+        train_ds = TileLocalizerV2Dataset(train_records, int(config["tile_size"]), torch, Image)
+        val_ds = TileLocalizerV2Dataset(val_records, int(config["tile_size"]), torch, Image)
+        model = build_pre_sns_v3_tile_localizer_v2(
+            torch,
+            tile_size=int(config["tile_size"]),
+            input_feature_mode=str(config["input_feature_mode"]),
+            base_channels=int(config.get("base_channels", 8)),
+            boundary_head=bool(config.get("boundary_head", True)),
+            confidence_head=bool(config.get("confidence_head", True)),
+        ).to(device)
+        opt = torch.optim.AdamW(model.parameters(), lr=float(config["learning_rate"]), weight_decay=float(config.get("weight_decay", 0.0)))
+        use_amp = bool(config.get("mixed_precision", False)) and device == "cuda"
+        scaler = torch.cuda.amp.GradScaler() if use_amp else None
+        batch_size = int(config["batch_size"])
+        accum = int(config.get("gradient_accumulation_steps", 1))
+        progress_log_interval = _progress_interval(config, "progress_log_interval_steps", 100)
+        stdout_progress_interval = _progress_interval(config, "stdout_progress_interval_steps", 100)
+        train_metrics = []
+        steps_per_epoch = max(1, (len(train_ds) + batch_size - 1) // batch_size)
+        total_steps = steps_per_epoch * int(config["epochs"])
+
+        _emit_progress(
+            torch,
+            config,
+            run_root,
+            device,
+            start,
+            0,
+            steps_per_epoch,
+            0,
+            total_steps,
+            latest_losses,
+            step_in_epoch=0,
+            phase="training_start",
+            stdout=True,
+        )
+
+        for epoch in range(int(config["epochs"])):
+            order = list(range(len(train_ds)))
+            random.Random(int(config["seed"]) + epoch).shuffle(order)
+            losses: list[float] = []
+            model.train()
+            opt.zero_grad(set_to_none=True)
+            for step_index, offset in enumerate(range(0, len(order), batch_size), start=1):
+                batch = make_batch(torch, train_ds, order[offset: offset + batch_size], device)
+                if use_amp:
+                    with torch.cuda.amp.autocast():
+                        loss_map = compute_losses(torch, model(batch["images"]), batch, config)
+                        loss = loss_map["total_loss"] / accum
+                    scaler.scale(loss).backward()
+                else:
                     loss_map = compute_losses(torch, model(batch["images"]), batch, config)
                     loss = loss_map["total_loss"] / accum
-                scaler.scale(loss).backward()
-            else:
-                loss_map = compute_losses(torch, model(batch["images"]), batch, config)
-                loss = loss_map["total_loss"] / accum
-                loss.backward()
-            if (steps + 1) % accum == 0:
-                if float(config.get("gradient_clip_norm", 0.0)) > 0:
+                    loss.backward()
+                if (steps + 1) % accum == 0:
+                    if float(config.get("gradient_clip_norm", 0.0)) > 0:
+                        if scaler is not None:
+                            scaler.unscale_(opt)
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), float(config["gradient_clip_norm"]))
                     if scaler is not None:
-                        scaler.unscale_(opt)
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), float(config["gradient_clip_norm"]))
-                if scaler is not None:
-                    scaler.step(opt)
-                    scaler.update()
-                else:
-                    opt.step()
-                opt.zero_grad(set_to_none=True)
-            steps += 1
-            losses.append(float(loss_map["total_loss"].detach().cpu().item()))
-        train_metrics.append({"epoch": epoch + 1, "mean_total_loss": sum(losses) / len(losses), "steps_completed": steps})
-    val_metrics, rows, calibration = evaluate(torch, model, val_ds, config, device)
-    run_root, ckpt_root = _safe_dirs(config)
-    best = ckpt_root / "best_tile_localizer_v2.pt"
-    latest = ckpt_root / "latest_tile_localizer_v2.pt"
-    checkpoint = {"model_name": "pre_sns_v3_tile_localizer_v2", "model_state_dict": model.state_dict(), "config": config, "tile_size": int(config["tile_size"]), "base_channels": int(config.get("base_channels", 8)), "input_feature_mode": config["input_feature_mode"], "selected_mask_threshold": val_metrics["selected_mask_threshold"]}
-    torch.save(checkpoint, best)
-    torch.save(checkpoint, latest)
-    summary = {"marker": MARKER, "training_started": True, "training_completed": True, "device": device, "epochs_completed": int(config["epochs"]), "steps_completed": steps, "train_tile_count": len(train_ds), "val_tile_count": len(val_ds), "val_metrics": val_metrics, "train_metrics": train_metrics, "elapsed_sec": time.time() - start, "no_download": True, "no_network": True, "no_sns_augmentation": True}
-    write_json(run_root / "run_summary.json", summary)
-    write_json(run_root / "val_metrics.json", val_metrics)
-    write_json(run_root / "threshold_calibration.json", calibration)
-    write_json(run_root / "failure_bucket_metrics.json", failure_bucket_metrics(rows))
-    write_json(run_root / "config_snapshot.json", config)
-    (run_root / "visual_samples").mkdir(parents=True, exist_ok=True)
-    with open(run_root / "tile_metrics.jsonl", "w", encoding="utf-8") as handle:
-        for row in rows:
-            handle.write(json.dumps(json_safe(row), sort_keys=True) + "\n")
-    artifact = {"marker": MARKER, "files": {"run_summary": str(run_root / "run_summary.json"), "val_metrics": str(run_root / "val_metrics.json"), "threshold_calibration": str(run_root / "threshold_calibration.json"), "tile_metrics": str(run_root / "tile_metrics.jsonl"), "failure_bucket_metrics": str(run_root / "failure_bucket_metrics.json"), "visual_samples": str(run_root / "visual_samples"), "config_snapshot": str(run_root / "config_snapshot.json"), "best_tile_localizer_v2": str(best), "latest_tile_localizer_v2": str(latest)}, "no_download": True, "no_network": True, "no_sns_augmentation": True}
-    write_json(run_root / "artifact_manifest.json", artifact)
-    summary.update({"artifact_manifest_path": str(run_root / "artifact_manifest.json"), "best_checkpoint_path": str(best), "latest_checkpoint_path": str(latest)})
-    write_json(run_root / "run_summary.json", summary)
-    return summary
+                        scaler.step(opt)
+                        scaler.update()
+                    else:
+                        opt.step()
+                    opt.zero_grad(set_to_none=True)
+                steps += 1
+                latest_losses = {
+                    "latest_loss": float(loss_map["total_loss"].detach().cpu().item()),
+                    "latest_bce_loss": float(loss_map["bce_loss"].detach().cpu().item()),
+                    "latest_dice_loss": float(loss_map["dice_loss"].detach().cpu().item()),
+                    "latest_tversky_loss": float(loss_map["tversky_loss"].detach().cpu().item()),
+                    "latest_boundary_loss": float(loss_map["boundary_loss"].detach().cpu().item()),
+                    "latest_empty_mask_loss": float(loss_map["empty_mask_loss"].detach().cpu().item()),
+                }
+                losses.append(float(latest_losses["latest_loss"]))
+                should_log_files = steps % progress_log_interval == 0
+                should_log_stdout = steps % stdout_progress_interval == 0
+                if should_log_files or should_log_stdout:
+                    _emit_progress(
+                        torch,
+                        config,
+                        run_root,
+                        device,
+                        start,
+                        epoch + 1,
+                        steps_per_epoch,
+                        steps,
+                        total_steps,
+                        latest_losses,
+                        step_in_epoch=step_index,
+                        phase="training",
+                        stdout=should_log_stdout,
+                    )
+            train_metrics.append({"epoch": epoch + 1, "mean_total_loss": sum(losses) / len(losses), "steps_completed": steps})
+            _emit_progress(
+                torch,
+                config,
+                run_root,
+                device,
+                start,
+                epoch + 1,
+                steps_per_epoch,
+                steps,
+                total_steps,
+                latest_losses,
+                step_in_epoch=steps_per_epoch,
+                phase="epoch_end",
+                stdout=True,
+            )
+
+        _emit_progress(
+            torch,
+            config,
+            run_root,
+            device,
+            start,
+            int(config["epochs"]),
+            steps_per_epoch,
+            steps,
+            total_steps,
+            latest_losses,
+            step_in_epoch=steps_per_epoch,
+            phase="before_validation",
+            stdout=True,
+        )
+        val_metrics, rows, calibration = evaluate(torch, model, val_ds, config, device)
+        _emit_progress(
+            torch,
+            config,
+            run_root,
+            device,
+            start,
+            int(config["epochs"]),
+            steps_per_epoch,
+            steps,
+            total_steps,
+            latest_losses,
+            step_in_epoch=steps_per_epoch,
+            phase="after_validation",
+            stdout=True,
+        )
+        best = ckpt_root / "best_tile_localizer_v2.pt"
+        latest = ckpt_root / "latest_tile_localizer_v2.pt"
+        checkpoint = {
+            "model_name": "pre_sns_v3_tile_localizer_v2",
+            "model_state_dict": model.state_dict(),
+            "config": config,
+            "tile_size": int(config["tile_size"]),
+            "base_channels": int(config.get("base_channels", 8)),
+            "input_feature_mode": config["input_feature_mode"],
+            "selected_mask_threshold": val_metrics["selected_mask_threshold"],
+        }
+        torch.save(checkpoint, best)
+        torch.save(checkpoint, latest)
+        summary = {
+            "marker": MARKER,
+            "training_started": True,
+            "training_completed": True,
+            "device": device,
+            "epochs_completed": int(config["epochs"]),
+            "steps_completed": steps,
+            "train_tile_count": len(train_ds),
+            "val_tile_count": len(val_ds),
+            "val_metrics": val_metrics,
+            "train_metrics": train_metrics,
+            "elapsed_sec": time.time() - start,
+            "no_download": True,
+            "no_network": True,
+            "no_sns_augmentation": True,
+        }
+        write_json(run_root / "run_summary.json", summary)
+        write_json(run_root / "val_metrics.json", val_metrics)
+        write_json(run_root / "threshold_calibration.json", calibration)
+        write_json(run_root / "failure_bucket_metrics.json", failure_bucket_metrics(rows))
+        write_json(run_root / "config_snapshot.json", config)
+        (run_root / "visual_samples").mkdir(parents=True, exist_ok=True)
+        with open(run_root / "tile_metrics.jsonl", "w", encoding="utf-8") as handle:
+            for row in rows:
+                handle.write(json.dumps(json_safe(row), sort_keys=True) + "\n")
+        artifact = {
+            "marker": MARKER,
+            "files": {
+                "run_summary": str(run_root / "run_summary.json"),
+                "val_metrics": str(run_root / "val_metrics.json"),
+                "threshold_calibration": str(run_root / "threshold_calibration.json"),
+                "tile_metrics": str(run_root / "tile_metrics.jsonl"),
+                "failure_bucket_metrics": str(run_root / "failure_bucket_metrics.json"),
+                "visual_samples": str(run_root / "visual_samples"),
+                "config_snapshot": str(run_root / "config_snapshot.json"),
+                "progress_json": str(run_root / "progress.json"),
+                "progress_jsonl": str(run_root / "progress.jsonl"),
+                "best_tile_localizer_v2": str(best),
+                "latest_tile_localizer_v2": str(latest),
+            },
+            "no_download": True,
+            "no_network": True,
+            "no_sns_augmentation": True,
+        }
+        write_json(run_root / "artifact_manifest.json", artifact)
+        summary.update({"artifact_manifest_path": str(run_root / "artifact_manifest.json"), "best_checkpoint_path": str(best), "latest_checkpoint_path": str(latest)})
+        write_json(run_root / "run_summary.json", summary)
+        _emit_progress(
+            torch,
+            config,
+            run_root,
+            device,
+            start,
+            int(config["epochs"]),
+            steps_per_epoch,
+            steps,
+            total_steps,
+            latest_losses,
+            step_in_epoch=steps_per_epoch,
+            phase="training_complete",
+            stdout=True,
+        )
+        return summary
+    except Exception as exc:
+        steps_per_epoch = max(1, int(math.ceil(len(train_records) / max(1, int(config.get("batch_size", 1)))))) if train_records else 1
+        total_steps = max(1, steps_per_epoch * max(1, int(config.get("epochs", 1))))
+        _emit_progress(
+            torch,
+            config,
+            run_root,
+            device,
+            start,
+            min(int(config.get("epochs", 1)), max(0, math.ceil(steps / steps_per_epoch))),
+            steps_per_epoch,
+            steps,
+            total_steps,
+            latest_losses,
+            step_in_epoch=steps_per_epoch if steps > 0 else 0,
+            phase="failure",
+            error=str(exc),
+            stdout=True,
+        )
+        if isinstance(exc, TileLocalizerV2TrainingError):
+            raise
+        raise TileLocalizerV2TrainingError(str(exc)) from exc
 
 
 def json_safe(value: Any) -> Any:
