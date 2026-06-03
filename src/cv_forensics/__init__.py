@@ -36,6 +36,7 @@ from . import pre_sns_v3_tile_localizer_v2_model
 from . import pre_sns_v3_tile_localizer_v2_training
 from . import pre_sns_v3_long256_tile_integrated_report
 from . import pre_sns_v3_v2_policy_gated_report
+from . import pre_sns_v3_v2_replay_tile_manifest
 from . import pre_sns_v3_final_visual_audit
 from .inference_stub import check_fake_input_config_safety
 from .metrics import check_toy_metric_config_safety
@@ -79,5 +80,6 @@ __all__ = [
     "pre_sns_v3_tile_localizer_v2_training",
     "pre_sns_v3_long256_tile_integrated_report",
     "pre_sns_v3_v2_policy_gated_report",
+    "pre_sns_v3_v2_replay_tile_manifest",
     "pre_sns_v3_final_visual_audit",
 ]

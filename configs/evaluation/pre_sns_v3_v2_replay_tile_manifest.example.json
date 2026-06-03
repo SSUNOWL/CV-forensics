@@ -1,0 +1,21 @@
+{
+  "schema_version": "1.0",
+  "config_kind": "approved_pre_sns_v3_v2_replay_tile_manifest",
+  "execution_mode": "approved_local_pre_sns_v3_v2_replay_tile_manifest",
+  "base_tile_manifest_path": "/home/rlatjswo/.codex/memories/pre_sns_0042_recommended/tile_localization_manifest.json",
+  "policy_still_failed_cases_path": "/home/rlatjswo/.codex/memories/pre_sns_0048_replay/policy_still_failed_cases.json",
+  "policy_worse_cases_path": "/home/rlatjswo/.codex/memories/pre_sns_0048_replay/policy_worse_cases.json",
+  "policy_non_tampered_high_mask_cases_path": "/home/rlatjswo/.codex/memories/pre_sns_0048_replay/policy_non_tampered_high_mask_cases.json",
+  "policy_fixed_cases_path": "/home/rlatjswo/.codex/memories/pre_sns_0048_replay/policy_fixed_cases.json",
+  "policy_better_cases_path": "/home/rlatjswo/.codex/memories/pre_sns_0048_replay/policy_better_cases.json",
+  "approved_input_roots": [
+    "/home/rlatjswo/.codex/memories/pre_sns_0042_recommended",
+    "/home/rlatjswo/.codex/memories/pre_sns_0048_replay"
+  ],
+  "output_root": "/home/rlatjswo/.codex/memories/pre_sns_v2_replay_medium_training_example",
+  "max_records": 24000,
+  "no_download": true,
+  "no_network": true,
+  "no_training": true,
+  "no_sns_augmentation": true
+}
