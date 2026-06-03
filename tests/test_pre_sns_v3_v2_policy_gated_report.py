@@ -18,11 +18,15 @@ if str(SRC_ROOT) not in sys.path:
 from cv_forensics.pre_sns_v3_v2_policy_gated_report import (  # noqa: E402
     CONFIG_OK_MARKER,
     MARKER,
+    _load_v2_model,
+    _model_forward_rgb,
+    _tile_boxes,
     build_policy_gated_record,
     run_policy_gated_report,
     threshold_mask,
     validate_policy_gated_report_config,
 )
+from cv_forensics.pre_sns_v3_tile_localizer_v2_model import build_pre_sns_v3_tile_localizer_v2  # noqa: E402
 
 
 def assert_true(value: bool, message: str) -> None:
@@ -99,8 +103,119 @@ def safe_config(root: Path, image_path: Path, mask_path: Path | None = None) -> 
     return cfg
 
 
+def write_fixture_v2_checkpoint(path: Path, *, rough_mask_prior: bool) -> None:
+    import torch
+
+    model = build_pre_sns_v3_tile_localizer_v2(
+        torch,
+        tile_size=8,
+        input_feature_mode="rgb_edge_residual",
+        base_channels=8,
+        boundary_head=True,
+        confidence_head=True,
+        rough_mask_prior=rough_mask_prior,
+    )
+    checkpoint = {
+        "model_state_dict": model.state_dict(),
+        "tile_size": 8,
+        "input_feature_mode": "rgb_edge_residual",
+    }
+    torch.save(checkpoint, path)
+
+
+def standalone_helper_probability_mask(config: dict[str, object], image_path: Path, baseline_mask: list[int]) -> list[float]:
+    import numpy as np
+    import torch
+    from PIL import Image
+
+    device = "cpu"
+    model, checkpoint, model_info = _load_v2_model(torch, str(config["tile_localizer_v2_checkpoint_path"]), device, config)
+    tile_size = int(model_info["tile_size"])
+    tile_stride = int(config.get("tile_stride", max(1, tile_size // 2)))
+    resample_bilinear = getattr(getattr(Image, "Resampling", Image), "BILINEAR")
+    resample_nearest = getattr(getattr(Image, "Resampling", Image), "NEAREST")
+    with Image.open(image_path) as image:
+        image = image.convert("RGB")
+        width, height = image.size
+        rough_full = Image.new("L", (width, height))
+        rough_full.putdata([255 if value else 0 for value in baseline_mask])
+        accum = np.zeros((height, width), dtype=np.float32)
+        counts = np.zeros((height, width), dtype=np.float32)
+        for x1, y1, x2, y2 in _tile_boxes(width, height, tile_size, tile_stride):
+            crop = image.crop((x1, y1, x2, y2))
+            original_size = crop.size
+            rough_crop = rough_full.crop((x1, y1, x2, y2))
+            if crop.size != (tile_size, tile_size):
+                crop_for_model = crop.resize((tile_size, tile_size), resample_bilinear)
+                rough_for_model = rough_crop.resize((tile_size, tile_size), resample_nearest)
+            else:
+                crop_for_model = crop
+                rough_for_model = rough_crop
+            prob = _model_forward_rgb(torch, model, model_info, crop_for_model, device, rough_tile_img=rough_for_model)
+            if prob.shape != (tile_size, tile_size):
+                prob_img = Image.fromarray((prob * 255.0).clip(0, 255).astype("uint8"))
+                prob_img = prob_img.resize((tile_size, tile_size), resample_bilinear)
+                prob = np.asarray(prob_img).astype("float32") / 255.0
+            prob_img = Image.fromarray((prob * 255.0).clip(0, 255).astype("uint8"))
+            prob_img = prob_img.resize(original_size, resample_bilinear)
+            prob_arr = np.asarray(prob_img).astype("float32") / 255.0
+            accum[y1:y2, x1:x2] += prob_arr
+            counts[y1:y2, x1:x2] += 1.0
+    counts[counts == 0] = 1.0
+    return [float(value) for value in (accum / counts).reshape(-1).tolist()]
+
+
 def test_threshold_mask() -> None:
     assert_equal(threshold_mask([0.1, 0.4, 0.9], 0.4), [0, 1, 1], "threshold mask")
+
+
+def test_v2_checkpoint_loader_selects_matching_stem_shape() -> None:
+    import torch
+
+    root = temp_root("cvf_v2_gate_loader_")
+    image_path, mask_path = write_fixture_image(root)
+    cfg = safe_config(root, image_path, mask_path)
+    ckpt_path = root / "ckpts" / "tile_v2.pt"
+    write_fixture_v2_checkpoint(ckpt_path, rough_mask_prior=False)
+    cfg["tile_localizer_v2_checkpoint_path"] = str(ckpt_path)
+    model, checkpoint, info = _load_v2_model(torch, str(ckpt_path), "cpu", cfg)
+    assert_equal(info["checkpoint_stem_shape"], [8, 11, 3, 3], "checkpoint stem shape")
+    assert_equal(info["model_stem_shape"], [8, 11, 3, 3], "model stem shape")
+    assert_true(info["rough_mask_prior"] is False, "rough prior should be false for 11 channels")
+
+
+def test_v2_checkpoint_loader_supports_rough_mask_prior_true() -> None:
+    import torch
+
+    root = temp_root("cvf_v2_gate_loader_rough_")
+    image_path, mask_path = write_fixture_image(root)
+    cfg = safe_config(root, image_path, mask_path)
+    ckpt_path = root / "ckpts" / "tile_v2.pt"
+    write_fixture_v2_checkpoint(ckpt_path, rough_mask_prior=True)
+    cfg["tile_localizer_v2_checkpoint_path"] = str(ckpt_path)
+    model, checkpoint, info = _load_v2_model(torch, str(ckpt_path), "cpu", cfg)
+    assert_equal(info["checkpoint_stem_shape"], [8, 12, 3, 3], "checkpoint stem shape")
+    assert_equal(info["model_stem_shape"], [8, 12, 3, 3], "model stem shape")
+    assert_true(info["rough_mask_prior"] is True, "rough prior should be true for 12 channels")
+
+
+def test_v2_rgb_forward_and_helper_consistency() -> None:
+    root = temp_root("cvf_v2_gate_consistency_")
+    image_path, mask_path = write_fixture_image(root)
+    cfg = safe_config(root, image_path, mask_path)
+    ckpt_path = root / "ckpts" / "tile_v2.pt"
+    write_fixture_v2_checkpoint(ckpt_path, rough_mask_prior=False)
+    cfg["tile_localizer_v2_checkpoint_path"] = str(ckpt_path)
+    cfg["tile_size"] = 8
+    cfg["tile_stride"] = 4
+    cfg.pop("fixture_v2_probability_mask", None)
+    baseline_mask = list(cfg["fixture_long256_report"]["baseline_mask"])
+    ours = build_policy_gated_record(cfg, {"image_path": str(image_path)}, 0)
+    helper = standalone_helper_probability_mask(cfg, image_path, baseline_mask)
+    ours_values = [float(v) for v in ours["_v2_probability_values"]]
+    assert_equal(len(ours_values), len(helper), "probability mask length")
+    max_delta = max(abs(a - b) for a, b in zip(ours_values, helper))
+    assert_true(max_delta <= 1e-6, f"helper consistency delta={max_delta}")
 
 
 def test_non_tampered_suppression() -> None:
@@ -200,6 +315,9 @@ def test_run_policy_gated_report_no_repo_writes() -> None:
 def main() -> int:
     tests = [
         test_threshold_mask,
+        test_v2_checkpoint_loader_selects_matching_stem_shape,
+        test_v2_checkpoint_loader_supports_rough_mask_prior_true,
+        test_v2_rgb_forward_and_helper_consistency,
         test_non_tampered_suppression,
         test_tampered_v2_mask_use,
         test_area_too_small_fallback,

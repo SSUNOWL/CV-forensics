@@ -10,6 +10,8 @@ Clean long256 remains the primary detector. It determines the class gate and rem
 
 Tile localizer v2 is a conditional high-resolution localizer. It is not used blindly. The report first runs clean long256, then only runs v2 localization for `tampered` cases. Non-tampered cases suppress localization by default.
 
+Tile localizer v2 receives external RGB input. It computes its fixed forensic edge/residual features internally. The report must not feed handcrafted 11-channel features directly into the model.
+
 ```text
 clean long256 detector -> policy gate -> conditional tile localizer v2 -> final red mask report
 ```
@@ -25,6 +27,8 @@ The policy gate applies configurable checks to the v2 mask:
 - reject masks that are too small or too large
 - optionally reject masks with too many components or too-small dominant components
 - optionally fall back to the clean long256 baseline mask when the v2 output is unreliable
+
+Checkpoint compatibility is selected from the checkpoint stem shape. The loader infers the v2 base channel count from `stem.0.weight`, matches the model stem shape, and chooses `rough_mask_prior` accordingly. For example, an `[8,11,3,3]` stem implies the RGB-to-internal-feature path with `rough_mask_prior=False`.
 
 For non-tampered long256 outputs, the final `localized_evidence_status` is `suppressed_non_tampered` by default.
 

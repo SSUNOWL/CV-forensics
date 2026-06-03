@@ -9,6 +9,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from .pre_sns_v3_dual_scale_report import (
     _err,
     _inside_repo,
@@ -284,48 +286,219 @@ def _v2_probability_values_from_fixture(sample: dict[str, Any], config: dict[str
     return [0.0] * (width * height)
 
 
-def _load_v2_model(torch: Any, checkpoint_path: str, device: str):
-    checkpoint = torch.load(checkpoint_path, map_location=device)
-    if not isinstance(checkpoint, dict):
+def _extract_checkpoint_state(raw_obj: Any) -> dict[str, Any]:
+    if not isinstance(raw_obj, dict):
         raise PolicyGatedReportError("tile localizer v2 checkpoint must be a dict")
-    model = build_pre_sns_v3_tile_localizer_v2(
-        torch,
-        tile_size=int(checkpoint.get("tile_size", 768)),
-        input_feature_mode=str(checkpoint.get("input_feature_mode", "rgb_edge_residual")),
-        base_channels=int(checkpoint.get("base_channels", 8)),
-        boundary_head=bool(checkpoint.get("boundary_head", True)),
-        confidence_head=bool(checkpoint.get("confidence_head", True)),
-    ).to(device)
-    model.load_state_dict(checkpoint["model_state_dict"])
-    model.eval()
-    return model, checkpoint
+    for key in ("model_state_dict", "state_dict", "model"):
+        if isinstance(raw_obj.get(key), dict):
+            return raw_obj[key]
+    tensor_keys = [key for key, value in raw_obj.items() if hasattr(value, "shape")]
+    if tensor_keys:
+        return raw_obj
+    raise PolicyGatedReportError("could not find state_dict in tile localizer v2 checkpoint")
 
 
-def run_tile_localizer_v2(config: dict[str, Any], sample: dict[str, Any], width: int, height: int) -> list[float]:
+def _normalize_state_keys(state: dict[str, Any]) -> dict[str, Any]:
+    if state and all(str(key).startswith("module.") for key in state):
+        return {str(key)[len("module."):]: value for key, value in state.items()}
+    return state
+
+
+def _find_checkpoint_stem(state: dict[str, Any]) -> tuple[str, tuple[int, ...]]:
+    stem = state.get("stem.0.weight")
+    if hasattr(stem, "shape"):
+        return "stem.0.weight", tuple(int(v) for v in stem.shape)
+    for key, value in state.items():
+        if hasattr(value, "shape") and len(value.shape) == 4:
+            return str(key), tuple(int(v) for v in value.shape)
+    raise PolicyGatedReportError("no 4D conv tensor found in tile localizer v2 checkpoint")
+
+
+def _state_has_prefix(state: dict[str, Any], prefix: str) -> bool:
+    return any(str(key).startswith(prefix) for key in state)
+
+
+def _model_stem_shape(model: Any) -> tuple[int, ...]:
+    state = model.state_dict()
+    stem = state.get("stem.0.weight")
+    if hasattr(stem, "shape"):
+        return tuple(int(v) for v in stem.shape)
+    for value in state.values():
+        if hasattr(value, "shape") and len(value.shape) == 4:
+            return tuple(int(v) for v in value.shape)
+    raise PolicyGatedReportError("could not determine model stem shape")
+
+
+def _tensor_from_model_output(torch: Any, out: Any) -> Any:
+    if isinstance(out, dict):
+        for key in ("mask_logits", "logits", "mask", "pred_mask"):
+            if key in out and torch.is_tensor(out[key]):
+                return out[key]
+        for value in out.values():
+            if torch.is_tensor(value):
+                return value
+    if isinstance(out, (list, tuple)):
+        for value in out:
+            if torch.is_tensor(value):
+                return value
+    if torch.is_tensor(out):
+        return out
+    raise PolicyGatedReportError(f"cannot find tensor output from model output type={type(out)}")
+
+
+def _tile_boxes(width: int, height: int, tile_size: int, tile_stride: int) -> list[tuple[int, int, int, int]]:
+    xs = list(range(0, max(1, width - tile_size + 1), tile_stride))
+    ys = list(range(0, max(1, height - tile_size + 1), tile_stride))
+    if not xs or xs[-1] != max(0, width - tile_size):
+        xs.append(max(0, width - tile_size))
+    if not ys or ys[-1] != max(0, height - tile_size):
+        ys.append(max(0, height - tile_size))
+    boxes: list[tuple[int, int, int, int]] = []
+    for y in ys:
+        for x in xs:
+            boxes.append((x, y, min(width, x + tile_size), min(height, y + tile_size)))
+    return boxes
+
+
+def _pil_to_rgb_tensor(torch: Any, image: Any, device: str) -> Any:
+    raw = torch.ByteTensor(torch.ByteStorage.from_buffer(image.convert("RGB").tobytes()))
+    width, height = image.size
+    return raw.reshape(1, height, width, 3).permute(0, 3, 1, 2).float().div(255.0).to(device)
+
+
+def _rough_mask_image(Image: Any, mask: list[int] | None, shape: tuple[int, int]) -> Any | None:
+    if mask is None:
+        return None
+    image = Image.new("L", shape)
+    image.putdata([255 if value else 0 for value in mask])
+    return image
+
+
+def _model_forward_rgb(torch: Any, model: Any, model_info: dict[str, Any], tile_img: Any, device: str, rough_tile_img: Any | None = None) -> np.ndarray:
+    rgb = _pil_to_rgb_tensor(torch, tile_img, device)
+    with torch.no_grad():
+        if bool(model_info.get("rough_mask_prior")) and rough_tile_img is not None:
+            arr = np.asarray(rough_tile_img.convert("L")).astype("float32") / 255.0
+            rough = torch.from_numpy(arr).unsqueeze(0).unsqueeze(0).to(device)
+            try:
+                out = model(rgb, rough)
+            except TypeError:
+                try:
+                    out = model(rgb, rough_mask_prior=rough)
+                except TypeError:
+                    out = model(images=rgb, rough_mask_prior=rough)
+        else:
+            out = model(rgb)
+    tensor = _tensor_from_model_output(torch, out)
+    if tensor.ndim == 4:
+        tensor = tensor[0]
+    if tensor.ndim == 3 and tensor.shape[0] == 1:
+        tensor = tensor[0]
+    logits = tensor.detach().float().cpu()
+    return torch.sigmoid(logits).numpy()
+
+
+def _load_v2_model(torch: Any, checkpoint_path: str, device: str, config: dict[str, Any]) -> tuple[Any, dict[str, Any], dict[str, Any]]:
+    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    state = _normalize_state_keys(_extract_checkpoint_state(checkpoint))
+    stem_key, checkpoint_stem_shape = _find_checkpoint_stem(state)
+    inferred_base_channels = int(checkpoint_stem_shape[0])
+    expected_internal_feature_channels = int(checkpoint_stem_shape[1])
+    tile_size = int(config.get("tile_size", checkpoint.get("tile_size", 768)))
+    feature_mode = str(config.get("input_feature_mode") or checkpoint.get("input_feature_mode") or "rgb_edge_residual")
+    boundary_head = True if _state_has_prefix(state, "boundary_head.") else bool(config.get("boundary_head", checkpoint.get("boundary_head", True)))
+    confidence_head = True if _state_has_prefix(state, "confidence_head.") else bool(config.get("confidence_head", checkpoint.get("confidence_head", True)))
+
+    selected_model = None
+    selected_info = None
+    for rough_mask_prior in (False, True):
+        candidate = build_pre_sns_v3_tile_localizer_v2(
+            torch,
+            tile_size=tile_size,
+            input_feature_mode=feature_mode,
+            base_channels=inferred_base_channels,
+            boundary_head=boundary_head,
+            confidence_head=confidence_head,
+            rough_mask_prior=rough_mask_prior,
+        )
+        model_stem_shape = _model_stem_shape(candidate)
+        if tuple(model_stem_shape) == tuple(checkpoint_stem_shape):
+            selected_model = candidate
+            selected_info = {
+                "checkpoint_stem_shape": [int(v) for v in checkpoint_stem_shape],
+                "model_stem_shape": [int(v) for v in model_stem_shape],
+                "base_channels": inferred_base_channels,
+                "expected_internal_feature_channels": expected_internal_feature_channels,
+                "input_feature_mode": feature_mode,
+                "rough_mask_prior": bool(rough_mask_prior),
+                "boundary_head": bool(boundary_head),
+                "confidence_head": bool(confidence_head),
+                "checkpoint_first_conv_key": stem_key,
+                "tile_size": tile_size,
+            }
+            break
+    if selected_model is None or selected_info is None:
+        raise PolicyGatedReportError(
+            f"could not match tile localizer v2 stem shape {checkpoint_stem_shape} using feature_mode={feature_mode}"
+        )
+
+    if tuple(_model_stem_shape(selected_model)) != tuple(checkpoint_stem_shape):
+        raise PolicyGatedReportError("model stem shape does not match checkpoint stem shape before state load")
+    result = selected_model.load_state_dict(state, strict=False)
+    selected_info["missing_count"] = len(list(getattr(result, "missing_keys", [])))
+    selected_info["unexpected_count"] = len(list(getattr(result, "unexpected_keys", [])))
+    selected_model.to(device)
+    selected_model.eval()
+    return selected_model, checkpoint, selected_info
+
+
+def run_tile_localizer_v2(
+    config: dict[str, Any],
+    sample: dict[str, Any],
+    width: int,
+    height: int,
+    baseline_mask: list[int] | None = None,
+) -> dict[str, Any]:
     fixture = _v2_probability_values_from_fixture(sample, config, width, height)
     if fixture is not None:
-        return fixture
+        return {"values": fixture, "model_info": {"source": "fixture_v2_probability_mask"}}
     torch, Image, _ImageDraw = _runtime_deps()
     device = "cuda" if config.get("device") == "cuda" and torch.cuda.is_available() else "cpu"
-    model, checkpoint = _load_v2_model(torch, config["tile_localizer_v2_checkpoint_path"], device)
-    tile_size = int(checkpoint.get("tile_size", min(width, height)))
+    model, checkpoint, model_info = _load_v2_model(torch, config["tile_localizer_v2_checkpoint_path"], device, config)
+    tile_size = int(model_info.get("tile_size", checkpoint.get("tile_size", min(width, height))))
+    tile_stride = int(config.get("tile_stride", max(1, tile_size // 2)))
     resample_bilinear = getattr(getattr(Image, "Resampling", Image), "BILINEAR")
+    resample_nearest = getattr(getattr(Image, "Resampling", Image), "NEAREST")
     with Image.open(sample["image_path"]) as image:
-        crop = image.convert("RGB")
-        if crop.size != (tile_size, tile_size):
-            crop = crop.resize((tile_size, tile_size), resample_bilinear)
-        raw = torch.ByteTensor(torch.ByteStorage.from_buffer(crop.tobytes()))
-        tensor = raw.reshape(1, tile_size, tile_size, 3).permute(0, 3, 1, 2).float().div(255.0).to(device)
-        with torch.no_grad():
-            probs = torch.sigmoid(model(tensor)["mask_logits"][0, 0]).detach().cpu()
-        if (width, height) != (tile_size, tile_size):
-            probs = torch.nn.functional.interpolate(
-                probs.reshape(1, 1, tile_size, tile_size),
-                size=(height, width),
-                mode="bilinear",
-                align_corners=False,
-            )[0, 0]
-    return [float(value) for value in probs.reshape(-1).tolist()]
+        image = image.convert("RGB")
+        rough_full = _rough_mask_image(Image, baseline_mask, (width, height))
+        accum = np.zeros((height, width), dtype=np.float32)
+        counts = np.zeros((height, width), dtype=np.float32)
+        boxes = _tile_boxes(width, height, tile_size, tile_stride)
+        for x1, y1, x2, y2 in boxes:
+            crop = image.crop((x1, y1, x2, y2))
+            original_size = crop.size
+            rough_crop = rough_full.crop((x1, y1, x2, y2)) if rough_full is not None else None
+            if crop.size != (tile_size, tile_size):
+                crop_for_model = crop.resize((tile_size, tile_size), resample_bilinear)
+                rough_for_model = rough_crop.resize((tile_size, tile_size), resample_nearest) if rough_crop is not None else None
+            else:
+                crop_for_model = crop
+                rough_for_model = rough_crop
+            prob = _model_forward_rgb(torch, model, model_info, crop_for_model, device, rough_tile_img=rough_for_model)
+            if prob.shape != (tile_size, tile_size):
+                prob_img = Image.fromarray((prob * 255.0).clip(0, 255).astype("uint8"))
+                prob_img = prob_img.resize((tile_size, tile_size), resample_bilinear)
+                prob = np.asarray(prob_img).astype("float32") / 255.0
+            prob_img = Image.fromarray((prob * 255.0).clip(0, 255).astype("uint8"))
+            prob_img = prob_img.resize(original_size, resample_bilinear)
+            prob_arr = np.asarray(prob_img).astype("float32") / 255.0
+            accum[y1:y2, x1:x2] += prob_arr
+            counts[y1:y2, x1:x2] += 1.0
+    counts[counts == 0] = 1.0
+    final_prob = accum / counts
+    model_info = {**model_info, "tile_stride": tile_stride, "tile_box_count": len(_tile_boxes(width, height, tile_size, tile_stride))}
+    return {"values": [float(value) for value in final_prob.reshape(-1).tolist()], "model_info": model_info}
 
 
 def _apply_component_filtering(config: dict[str, Any], mask: list[int], shape: tuple[int, int]) -> list[int]:
@@ -387,9 +560,12 @@ def build_policy_gated_record(config: dict[str, Any], sample: dict[str, Any], in
     final_mask = [0] * (width * height)
     final_mask_source = "suppressed_non_tampered"
     reliability_reasons: list[str] = []
+    v2_model_info: dict[str, Any] = {}
 
     if str(long_report["class"]) == "tampered":
-        v2_values = run_tile_localizer_v2(config, sample, width, height)
+        v2_result = run_tile_localizer_v2(config, sample, width, height, baseline_mask=baseline_mask)
+        v2_values = list(v2_result.get("values", []))
+        v2_model_info = dict(v2_result.get("model_info", {}))
         if len(v2_values) != width * height:
             v2_values = [0.0] * (width * height)
         v2_raw_mask = threshold_mask(v2_values, threshold)
@@ -443,6 +619,7 @@ def build_policy_gated_record(config: dict[str, Any], sample: dict[str, Any], in
         "largest_component_area_pct": float(v2_stats["largest_component_area_pct"]),
         "final_mask_area_pct": float(final_stats["mask_area_pct"]),
         "baseline_mask_area_pct": float(baseline_stats["mask_area_pct"]),
+        "v2_model_info": v2_model_info,
         "reliability_reasons": reliability_reasons,
         "baseline_iou": metrics["baseline_iou"],
         "baseline_dice": metrics["baseline_dice"],
