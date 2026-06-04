@@ -1,8 +1,10 @@
-Task Title: 0055 SNSAug V2 Source Manifest Audit, Overlay Generator, and Tiny Fixed Pairs
+## Task Title
+0055 SNSAug V2 Source Manifest Audit, Overlay Generator, and Tiny Fixed Pairs
 
-Role: Codex-only task writer and later implementation worker/reviewer for SNSAug v2 data generation, preview, and tiny paired benchmark creation. This task is generation-only and must not train or fine-tune models.
+## Role
+Codex-only task writer and later implementation worker/reviewer for SNSAug v2 data generation, preview, and tiny paired benchmark creation. This task is generation-only and must not train or fine-tune models.
 
-Files Codex May Read:
+## Files Codex May Read
 - AGENTS.md
 - CLAUDE.md
 - docs/project_brief.md
@@ -29,7 +31,7 @@ Files Codex May Read:
 - tests/test_snsaug_v2.py
 - relevant validators, scripts, and current git status
 
-Files Codex May Modify:
+## Files Codex May Modify
 - tasks/0055-snsaug-v2-source-manifest-audit-overlay-generator-and-tiny-fixed-pairs.md
 - configs/snsaug_v2/snsaug_v2_source_audit.example.json
 - configs/snsaug_v2/snsaug_v2_overlay_preview.example.json
@@ -49,7 +51,7 @@ Files Codex May Modify:
 - tests/test_snsaug_v2_generation.py
 - docs/snsaug_v2_generation.md
 
-Forbidden Actions:
+## Forbidden Actions
 - Do not train.
 - Do not fine-tune.
 - Do not run 0054.
@@ -62,7 +64,7 @@ Forbidden Actions:
 - Do not access `.env`, `.env.*`, secrets, datasets, outputs, checkpoints, or protected directories beyond what is explicitly required for safe manifest validation.
 - Do not assume a prebuilt SNSAug dataset exists.
 
-Important Project Facts:
+## Important Project Facts
 - The project is a lightweight multi-head image forensics system using Community Forensics-Small and SID-Set.
 - It performs real / synthetic / tampered 3-way classification, tampered mask localization, generator-family provenance when available, and template-based evidence reporting.
 - SNSAug v2 is benign degradation and overlay only. It must never change the underlying content label:
@@ -77,7 +79,7 @@ Important Project Facts:
 - Existing `src/cv_forensics/snsaug_v2/*` modules from 0051 already exist and must be audited and extended rather than duplicated.
 - All generated artifacts must be written outside the repository.
 
-Implementation Requirements:
+## Implementation Requirements
 - Implement four phases within the allowed files only.
 
 - Phase A: Source manifest audit
@@ -327,7 +329,7 @@ Implementation Requirements:
     - limitations
     - marker `SNSAUG_V2_GENERATION_AND_TINY_PAIRS_OK`
 
-Validation Commands:
+## Validation Commands
 ```bash
 python3 scripts/agent/validate_snsaug_v2_generation_config.py configs/snsaug_v2/snsaug_v2_source_audit.example.json
 ```
@@ -360,7 +362,7 @@ grep -q SNSAUG_V2_GENERATION_AND_TINY_PAIRS_OK docs/snsaug_v2_generation.md
 python3 scripts/agent/check_agent_changes.py tasks/0055-snsaug-v2-source-manifest-audit-overlay-generator-and-tiny-fixed-pairs.md
 ```
 
-Acceptance Criteria:
+## Acceptance Criteria
 - A source manifest can be audited safely from clean source data without assuming any prebuilt SNSAug dataset.
 - The audit writes valid/invalid record outputs and class summaries without crashing when `fail_fast=false`.
 - SNSAug v2 overlay generation remains deterministic with a fixed seed and preserves labels.
@@ -371,6 +373,6 @@ Acceptance Criteria:
 - Config validation, tests, docs marker, and agent change checks all pass.
 - Backward compatibility with existing SNSAug v2 training-wrapper and fine-tuning code is preserved.
 
-Stop Condition:
+## Stop Condition
 - Stop after implementing only the allowed files, running the listed validation commands, and reviewing the result as PASS or NEEDS_FIX.
 - If implementation would require training, fine-tuning, network access, downloading assets, repo-local output writing, or modifying unrelated model code, stop and report the blocker.

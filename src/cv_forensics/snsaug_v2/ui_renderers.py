@@ -136,3 +136,20 @@ def draw_bottom_nav(image: Image.Image, ignore_mask: Image.Image, labels: list[s
         draw.text((x - 16, height - 34), label, fill=(255, 255, 255), font=font)
         items.append({"kind": "nav_label", "text": label, "box": [max(0, x - 22), height - 40, min(width, x + 22), height - 18]})
     return items
+
+
+def draw_overlay_debug(image: Image.Image, overlay_boxes: list[dict[str, Any]]) -> Image.Image:
+    debug = image.convert("RGB").copy()
+    draw = ImageDraw.Draw(debug, "RGBA")
+    font = load_font(None, 12)
+    for index, box_info in enumerate(overlay_boxes):
+        box = box_info.get("box")
+        if not isinstance(box, list) or len(box) != 4:
+            continue
+        rect = tuple(int(value) for value in box)
+        label = str(box_info.get("kind") or f"overlay_{index}")
+        draw.rectangle(rect, outline=(255, 64, 64, 255), width=2)
+        tag = (rect[0], max(0, rect[1] - 16), min(debug.size[0], rect[0] + 110), rect[1])
+        draw.rectangle(tag, fill=(0, 0, 0, 180))
+        draw.text((tag[0] + 2, tag[1] + 2), label[:18], fill=(255, 255, 255), font=font)
+    return debug

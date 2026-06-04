@@ -1,0 +1,26 @@
+{
+  "schema_version": "1.0",
+  "config_kind": "approved_snsaug_v2_overlay_preview",
+  "execution_mode": "approved_local_snsaug_v2_overlay_preview",
+  "image_path": "/home/rlatjswo/.codex/memories/snsaug_v2_examples/preview_input.png",
+  "mask_path": "/home/rlatjswo/.codex/memories/snsaug_v2_examples/preview_mask.png",
+  "approved_input_roots": [
+    "/home/rlatjswo/.codex/memories/snsaug_v2_examples"
+  ],
+  "approved_output_roots": [
+    "/home/rlatjswo/.codex/memories/snsaug_v2_outputs"
+  ],
+  "output_root": "/home/rlatjswo/.codex/memories/snsaug_v2_outputs/overlay_preview_run",
+  "profiles": [
+    "clean",
+    "tiktok_like",
+    "combined_sns_realistic"
+  ],
+  "severity": "medium",
+  "seed": 51,
+  "use_demo_image": false,
+  "no_training": true,
+  "no_finetune": true,
+  "no_network": true,
+  "no_download": true
+}

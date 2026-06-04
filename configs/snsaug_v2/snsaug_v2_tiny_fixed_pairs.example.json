@@ -1,0 +1,26 @@
+{
+  "schema_version": "1.0",
+  "config_kind": "approved_snsaug_v2_tiny_fixed_pairs",
+  "execution_mode": "approved_local_snsaug_v2_tiny_fixed_pairs",
+  "source_manifest_path": "/home/rlatjswo/.codex/memories/snsaug_v2_examples/source_manifest.jsonl",
+  "approved_input_roots": [
+    "/home/rlatjswo/.codex/memories/snsaug_v2_examples"
+  ],
+  "approved_output_roots": [
+    "/home/rlatjswo/.codex/memories/snsaug_v2_outputs"
+  ],
+  "output_root": "/home/rlatjswo/.codex/memories/snsaug_v2_outputs/tiny_fixed_pairs_run",
+  "profiles": [
+    "jpeg_resize",
+    "tiktok_like",
+    "news_meme_overlay",
+    "combined_sns_realistic"
+  ],
+  "severity": "medium",
+  "seed": 77,
+  "max_samples_per_class": 5,
+  "no_training": true,
+  "no_finetune": true,
+  "no_network": true,
+  "no_download": true
+}
