@@ -46,6 +46,14 @@ class SNSAugV2Config:
     apply_blur: bool = False
     apply_color_shift: bool = False
     apply_screenshot_recapture: bool = False
+    text_vs_sticker_max_overlap: float = 0.0
+    text_vs_text_max_overlap: float = 0.02
+    sticker_vs_sticker_max_overlap: float = 0.05
+    badge_vs_text_max_overlap: float = 0.0
+    variable_vs_fixed_ui_max_overlap: float = 0.0
+    max_placement_attempts: int = 30
+    placement_margin_px: int = 8
+    max_ignore_mask_area_pct_medium: float = 0.30
     font_path: Optional[str] = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -74,6 +82,12 @@ def validate_config(config: SNSAugV2Config) -> None:
         "p_emoji_sticker",
         "p_color_shift",
         "p_blur_pixelation",
+        "text_vs_sticker_max_overlap",
+        "text_vs_text_max_overlap",
+        "sticker_vs_sticker_max_overlap",
+        "badge_vs_text_max_overlap",
+        "variable_vs_fixed_ui_max_overlap",
+        "max_ignore_mask_area_pct_medium",
     ):
         value = getattr(config, name)
         if not isinstance(value, (int, float)) or value < 0.0 or value > 1.0:
@@ -82,6 +96,10 @@ def validate_config(config: SNSAugV2Config) -> None:
         raise ValueError("output_size must be a positive integer")
     if config.font_path is not None and not isinstance(config.font_path, str):
         raise ValueError("font_path must be a string when provided")
+    for name in ("max_placement_attempts", "placement_margin_px"):
+        value = getattr(config, name)
+        if not isinstance(value, int) or value < 0:
+            raise ValueError(f"{name} must be a non-negative integer")
     for name in (
         "apply_degradation",
         "apply_recompression",

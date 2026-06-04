@@ -56,6 +56,13 @@ def _meta(kind: str, rect: tuple[int, int, int, int], area: int, pct: float, **e
     return payload
 
 
+def _clean_extra_meta(meta: dict[str, Any] | None) -> dict[str, Any]:
+    extra = dict(meta or {})
+    for key in ("kind", "box", "final_bbox", "alpha_mask_area_px", "ignore_mask_area_pct", "element_type"):
+        extra.pop(key, None)
+    return extra
+
+
 def clamp_rect(rect: tuple[int, int, int, int], size: tuple[int, int]) -> tuple[int, int, int, int]:
     width, height = size
     x1 = max(0, min(width - 1, int(rect[0])))
@@ -113,7 +120,9 @@ def draw_labeled_chip(
     font = load_font(font_path, size=max(10, (rect[3] - rect[1]) // 3))
     draw.text((rect[0] + 8, rect[1] + 8), text, fill=text_fill, font=font)
     area, pct = _apply_overlay(image, ignore_mask, overlay)
-    return _meta("chip", rect, area, pct, text=text, **(meta or {}))
+    extra = _clean_extra_meta(meta)
+    extra.pop("text", None)
+    return _meta("chip", rect, area, pct, text=text, **extra)
 
 
 def draw_text_block(
@@ -135,7 +144,9 @@ def draw_text_block(
         draw.text((rect[0] + 8, y), line, fill=text_fill, font=font)
         y += 14
     area, pct = _apply_overlay(image, ignore_mask, overlay)
-    return _meta("text_block", rect, area, pct, lines=list(lines), **(meta or {}))
+    extra = _clean_extra_meta(meta)
+    extra.pop("lines", None)
+    return _meta("text_block", rect, area, pct, lines=list(lines), **extra)
 
 
 def draw_progress_bars(image: Image.Image, ignore_mask: Image.Image, count: int = 5) -> list[dict[str, Any]]:

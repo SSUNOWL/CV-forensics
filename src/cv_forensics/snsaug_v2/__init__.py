@@ -2,6 +2,7 @@
 
 from .configs import PROFILES, SEVERITIES, SNSAugV2Config, SNSAugV2Result, load_config, validate_config
 from .pair_generator import SNSAugV2PairGenerator
+from .placement import PlacedOverlay, PlacementDecision, PlacementManager
 from .sns_augmentor import SNSAugV2Augmentor
 from .source_manifest_audit import (
     APPROVED_CONFIG_KINDS,
@@ -18,6 +19,9 @@ __all__ = [
     "CONFIG_OK_MARKER",
     "MARKER",
     "PROFILES",
+    "PlacedOverlay",
+    "PlacementDecision",
+    "PlacementManager",
     "SEVERITIES",
     "SNSAugV2Config",
     "SNSAugV2Result",

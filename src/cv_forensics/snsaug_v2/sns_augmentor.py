@@ -90,6 +90,7 @@ class SNSAugV2Augmentor:
         geom_meta: dict[str, Any] = {"type": "identity"}
         transforms_applied: list[str] = []
         postprocess_applied: list[str] = []
+        template_meta: dict[str, Any] = {}
 
         working_image = image.copy()
         working_mask = None if tamper_mask is None else tamper_mask.copy()
@@ -139,16 +140,16 @@ class SNSAugV2Augmentor:
                 "instagram_story_like": render_instagram_story_like,
                 "youtube_shorts_like": render_youtube_shorts_like,
             }[self.config.profile]
-            working_image, working_mask, meta = renderer(image, tamper_mask, ignore_mask, rng, self.config.font_path)
-            overlay_boxes.extend(meta["overlay_boxes"])
-            geom_meta = meta["geometric_transform_meta"]
-            transforms_applied.append(meta["template"])
+            working_image, working_mask, template_meta = renderer(image, tamper_mask, ignore_mask, rng, self.config.font_path, self.config)
+            overlay_boxes.extend(template_meta["overlay_boxes"])
+            geom_meta = template_meta["geometric_transform_meta"]
+            transforms_applied.append(template_meta["template"])
         elif self.config.profile == "news_meme_overlay":
             ignore_mask = blank_mask(image.size)
-            working_image, working_mask, meta = render_news_meme_overlay(image, tamper_mask, ignore_mask, rng, self.config.font_path)
-            overlay_boxes.extend(meta["overlay_boxes"])
-            geom_meta = meta["geometric_transform_meta"]
-            transforms_applied.append(meta["template"])
+            working_image, working_mask, template_meta = render_news_meme_overlay(image, tamper_mask, ignore_mask, rng, self.config.font_path, self.config)
+            overlay_boxes.extend(template_meta["overlay_boxes"])
+            geom_meta = template_meta["geometric_transform_meta"]
+            transforms_applied.append(template_meta["template"])
         elif self.config.profile == "ai_badge_overlay":
             ignore_mask = blank_mask(image.size)
             width, _height = image.size
@@ -158,10 +159,10 @@ class SNSAugV2Augmentor:
             transforms_applied.append("ai_badge")
         elif self.config.profile == "annotation_sticker":
             ignore_mask = blank_mask(image.size)
-            working_image, working_mask, meta = render_annotation_sticker(image, tamper_mask, ignore_mask, rng, self.config.font_path)
-            overlay_boxes.extend(meta["overlay_boxes"])
-            geom_meta = meta["geometric_transform_meta"]
-            transforms_applied.append(meta["template"])
+            working_image, working_mask, template_meta = render_annotation_sticker(image, tamper_mask, ignore_mask, rng, self.config.font_path, self.config)
+            overlay_boxes.extend(template_meta["overlay_boxes"])
+            geom_meta = template_meta["geometric_transform_meta"]
+            transforms_applied.append(template_meta["template"])
         elif self.config.profile == "combined_sns_realistic":
             ignore_mask = blank_mask((540, 960))
             template_name = self.config.platform_template or ("tiktok_like" if rng.random() < 0.34 else "instagram_story_like" if rng.random() < 0.67 else "youtube_shorts_like")
@@ -170,9 +171,9 @@ class SNSAugV2Augmentor:
                 "instagram_story_like": render_instagram_story_like,
                 "youtube_shorts_like": render_youtube_shorts_like,
             }[template_name]
-            working_image, working_mask, meta = renderer(image, tamper_mask, ignore_mask, rng, self.config.font_path)
-            overlay_boxes.extend(meta["overlay_boxes"])
-            geom_meta = meta["geometric_transform_meta"]
+            working_image, working_mask, template_meta = renderer(image, tamper_mask, ignore_mask, rng, self.config.font_path, self.config)
+            overlay_boxes.extend(template_meta["overlay_boxes"])
+            geom_meta = template_meta["geometric_transform_meta"]
             transforms_applied.append(template_name)
             if rng.random() < self.config.p_ai_badge:
                 overlay_boxes.append(draw_ai_badge(working_image, ignore_mask, (16, 710, 190, 748), rng, self.config.font_path))
@@ -221,5 +222,9 @@ class SNSAugV2Augmentor:
             "postprocess_applied": postprocess_applied,
             "platform_template": self.config.platform_template,
             "layout_only": self.config.profile in {"tiktok_like", "instagram_story_like", "youtube_shorts_like", "news_meme_overlay"},
+            "placement_collision_guard_enabled": True,
+            "placement_retries_total": int(getattr(template_meta.get("placement_manager", None), "retries_total", 0)) if isinstance(template_meta, dict) else 0,
+            "placement_skipped_count": int(getattr(template_meta.get("placement_manager", None), "skipped_count", 0)) if isinstance(template_meta, dict) else 0,
+            "final_ignore_mask_area_pct": float(sum(1 for value in ignore_mask.getdata() if value > 0) * 100.0 / float(max(1, ignore_mask.size[0] * ignore_mask.size[1]))),
         }
         return SNSAugV2Result(image=working_image, tamper_mask=working_mask, ignore_mask=ignore_mask, meta=meta)

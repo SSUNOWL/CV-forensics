@@ -4,6 +4,8 @@
 
 `SNSAUG_V2_LAYOUT_ONLY_PRECISE_IGNORE_OK`
 
+`SNSAUG_V2_OVERLAY_COLLISION_GUARD_OK`
+
 This task creates SNSAug data from clean source manifests. It does not require a pre-existing SNSAug dataset. It is generation, preview, and pair-building only. It does not train or fine-tune models.
 
 ## Scope
@@ -81,6 +83,22 @@ For a different seed:
 - the same profile can move variable overlays within its candidate regions
 
 Metadata records the chosen candidate region, final box, jitter, size scale, and alpha-driven ignore-mask area fields for variable elements.
+
+## Placement Collision Guard
+
+Variable overlays now use a deterministic placement collision guard before they are committed. The guard renders a candidate overlay to a temporary alpha layer, compares that alpha mask against already placed overlays, and retries placement when overlap exceeds the configured thresholds.
+
+Default collision policy includes:
+
+- text vs sticker: no overlap
+- badge vs text: no overlap
+- variable overlay vs fixed UI: no overlap
+- text vs text: very small overlap only
+- sticker vs sticker: small overlap only
+
+Metadata records placement retries, skipped optional overlays, overlap ratios, and placement-policy fields so the final augmentation remains auditable.
+
+If all candidate regions are blocked, optional overlays may be skipped instead of forcing a collision.
 
 ## Source Manifest Audit
 

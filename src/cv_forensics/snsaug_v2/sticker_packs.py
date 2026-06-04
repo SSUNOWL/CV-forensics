@@ -7,7 +7,7 @@ from typing import Any
 
 from PIL import Image, ImageDraw
 
-from .ui_renderers import _apply_overlay, _meta, _new_overlay, draw_labeled_chip, rect_to_box
+from .ui_renderers import _apply_overlay, _clean_extra_meta, _meta, _new_overlay, draw_labeled_chip, rect_to_box
 
 AI_BADGES = ("Made with AI", "AI generated", "AI-edited", "Synthetic image", "Generated with AI")
 WATERMARKS = ("short-video", "@user_sample", "@clipview")
@@ -33,7 +33,7 @@ def draw_red_circle(image: Image.Image, ignore_mask: Image.Image, rect: tuple[in
     overlay, draw = _new_overlay(image)
     draw.ellipse(rect, outline=(255, 0, 0, 255), width=6)
     area, pct = _apply_overlay(image, ignore_mask, overlay)
-    return _meta("red_circle", rect, area, pct, **(meta or {}))
+    return _meta("red_circle", rect, area, pct, **_clean_extra_meta(meta))
 
 
 def draw_red_arrow(image: Image.Image, ignore_mask: Image.Image, rect: tuple[int, int, int, int], meta: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -47,21 +47,21 @@ def draw_red_arrow(image: Image.Image, ignore_mask: Image.Image, rect: tuple[int
     draw.polygon([(right - 10, top + 10), (right - 30, top + 6), (right - 14, top + 28)], fill=(255, 0, 0, 255))
     normalized = (left, top, right, bottom)
     area, pct = _apply_overlay(image, ignore_mask, overlay)
-    return _meta("red_arrow", normalized, area, pct, **(meta or {}))
+    return _meta("red_arrow", normalized, area, pct, **_clean_extra_meta(meta))
 
 
 def draw_red_rectangle(image: Image.Image, ignore_mask: Image.Image, rect: tuple[int, int, int, int], meta: dict[str, Any] | None = None) -> dict[str, Any]:
     overlay, draw = _new_overlay(image)
     draw.rectangle(rect, outline=(255, 30, 30, 255), width=5)
     area, pct = _apply_overlay(image, ignore_mask, overlay)
-    return _meta("red_rectangle", rect, area, pct, **(meta or {}))
+    return _meta("red_rectangle", rect, area, pct, **_clean_extra_meta(meta))
 
 
 def draw_highlight_box(image: Image.Image, ignore_mask: Image.Image, rect: tuple[int, int, int, int], meta: dict[str, Any] | None = None) -> dict[str, Any]:
     overlay, draw = _new_overlay(image)
     draw.rounded_rectangle(rect, radius=8, fill=(255, 235, 59, 120), outline=(255, 180, 0, 255), width=3)
     area, pct = _apply_overlay(image, ignore_mask, overlay)
-    return _meta("highlight_box", rect, area, pct, **(meta or {}))
+    return _meta("highlight_box", rect, area, pct, **_clean_extra_meta(meta))
 
 
 def draw_speech_bubble(image: Image.Image, ignore_mask: Image.Image, rect: tuple[int, int, int, int], font_path: str | None = None, meta: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -71,7 +71,7 @@ def draw_speech_bubble(image: Image.Image, ignore_mask: Image.Image, rect: tuple
     draw.polygon(tail, fill=(255, 255, 255, 220), outline=(0, 0, 0, 255))
     final_rect = (rect[0], rect[1], rect[2], rect[3] + 12)
     area, pct = _apply_overlay(image, ignore_mask, overlay)
-    return _meta("speech_bubble", final_rect, area, pct, **(meta or {}))
+    return _meta("speech_bubble", final_rect, area, pct, **_clean_extra_meta(meta))
 
 
 def draw_emoji_face(image: Image.Image, ignore_mask: Image.Image, rect: tuple[int, int, int, int], meta: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -83,7 +83,7 @@ def draw_emoji_face(image: Image.Image, ignore_mask: Image.Image, rect: tuple[in
     draw.ellipse((x2 - 16, eye_y, x2 - 10, eye_y + 6), fill=(0, 0, 0, 255))
     draw.arc((x1 + 10, y1 + 12, x2 - 10, y2 - 8), start=10, end=170, fill=(0, 0, 0, 255), width=2)
     area, pct = _apply_overlay(image, ignore_mask, overlay)
-    return _meta("emoji_face", rect, area, pct, **(meta or {}))
+    return _meta("emoji_face", rect, area, pct, **_clean_extra_meta(meta))
 
 
 def draw_heart(image: Image.Image, ignore_mask: Image.Image, rect: tuple[int, int, int, int], meta: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -94,7 +94,7 @@ def draw_heart(image: Image.Image, ignore_mask: Image.Image, rect: tuple[int, in
     draw.ellipse((mid, y1, x2, y1 + (y2 - y1) // 2), fill=(255, 0, 80, 235))
     draw.polygon([(x1 + 3, y1 + (y2 - y1) // 3), (x2 - 3, y1 + (y2 - y1) // 3), (mid, y2)], fill=(255, 0, 80, 235))
     area, pct = _apply_overlay(image, ignore_mask, overlay)
-    return _meta("heart", rect, area, pct, **(meta or {}))
+    return _meta("heart", rect, area, pct, **_clean_extra_meta(meta))
 
 
 def draw_check_or_cross(image: Image.Image, ignore_mask: Image.Image, rect: tuple[int, int, int, int], positive: bool = True) -> dict[str, Any]:
