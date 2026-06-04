@@ -29,6 +29,12 @@ APPROVAL_TEXT = "I_APPROVE_SNSAUG_V2_FIXED_PAIRS_EVAL"
 CLASS_LABELS = ("real", "synthetic", "tampered")
 SUPPORTED_PROFILES = (
     "clean",
+    "canvas_9x16_only",
+    "canvas_9x16_full_content",
+    "platform_ui_same_size",
+    "tiktok_like_no_actionbar",
+    "instagram_story_no_text_sticker",
+    "youtube_shorts_no_actionbar",
     "tiktok_like",
     "instagram_story_like",
     "youtube_shorts_like",

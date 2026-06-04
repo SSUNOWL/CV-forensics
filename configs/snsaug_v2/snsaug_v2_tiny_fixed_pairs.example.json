@@ -11,7 +11,9 @@
   ],
   "output_root": "/home/rlatjswo/.codex/memories/snsaug_v2_outputs/tiny_fixed_pairs_run",
   "profiles": [
-    "jpeg_resize",
+    "canvas_9x16_only",
+    "platform_ui_same_size",
+    "tiktok_like_no_actionbar",
     "tiktok_like",
     "news_meme_overlay",
     "combined_sns_realistic"

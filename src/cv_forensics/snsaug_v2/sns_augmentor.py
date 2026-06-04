@@ -9,9 +9,11 @@ from PIL import Image
 
 from .configs import SNSAugV2Config, SNSAugV2Result, validate_config
 from .platform_templates import (
+    render_canvas_9x16_only,
     render_annotation_sticker,
     render_instagram_story_like,
     render_news_meme_overlay,
+    render_platform_ui_same_size,
     render_tiktok_like,
     render_youtube_shorts_like,
 )
@@ -133,14 +135,39 @@ class SNSAugV2Augmentor:
             overlay_boxes.append(draw_labeled_chip(working_image, ignore_mask, (8, 6, 110, 30), "12:41", fill=(0, 0, 0, 220)))
             overlay_boxes.append(draw_labeled_chip(working_image, ignore_mask, (8, working_image.size[1] - 34, 180, working_image.size[1] - 8), "screenshot bar", fill=(0, 0, 0, 220)))
             transforms_applied.append("screenshot_frame")
-        elif self.config.profile in {"tiktok_like", "instagram_story_like", "youtube_shorts_like"}:
+        elif self.config.profile in {
+            "canvas_9x16_only",
+            "canvas_9x16_full_content",
+            "tiktok_like",
+            "tiktok_like_no_actionbar",
+            "instagram_story_like",
+            "instagram_story_no_text_sticker",
+            "youtube_shorts_like",
+            "youtube_shorts_no_actionbar",
+        }:
             ignore_mask = blank_mask((540, 960))
-            renderer = {
-                "tiktok_like": render_tiktok_like,
-                "instagram_story_like": render_instagram_story_like,
-                "youtube_shorts_like": render_youtube_shorts_like,
-            }[self.config.profile]
-            working_image, working_mask, template_meta = renderer(image, tamper_mask, ignore_mask, rng, self.config.font_path, self.config)
+            if self.config.profile == "canvas_9x16_only":
+                working_image, working_mask, template_meta = render_canvas_9x16_only(image, tamper_mask, ignore_mask, rng, self.config.font_path, self.config, maximize_content=False)
+            elif self.config.profile == "canvas_9x16_full_content":
+                working_image, working_mask, template_meta = render_canvas_9x16_only(image, tamper_mask, ignore_mask, rng, self.config.font_path, self.config, maximize_content=True)
+            elif self.config.profile == "tiktok_like":
+                working_image, working_mask, template_meta = render_tiktok_like(image, tamper_mask, ignore_mask, rng, self.config.font_path, self.config, include_action_bar=True)
+            elif self.config.profile == "tiktok_like_no_actionbar":
+                working_image, working_mask, template_meta = render_tiktok_like(image, tamper_mask, ignore_mask, rng, self.config.font_path, self.config, include_action_bar=False)
+            elif self.config.profile == "instagram_story_like":
+                working_image, working_mask, template_meta = render_instagram_story_like(image, tamper_mask, ignore_mask, rng, self.config.font_path, self.config, include_text_sticker=True)
+            elif self.config.profile == "instagram_story_no_text_sticker":
+                working_image, working_mask, template_meta = render_instagram_story_like(image, tamper_mask, ignore_mask, rng, self.config.font_path, self.config, include_text_sticker=False)
+            elif self.config.profile == "youtube_shorts_like":
+                working_image, working_mask, template_meta = render_youtube_shorts_like(image, tamper_mask, ignore_mask, rng, self.config.font_path, self.config, include_action_bar=True)
+            else:
+                working_image, working_mask, template_meta = render_youtube_shorts_like(image, tamper_mask, ignore_mask, rng, self.config.font_path, self.config, include_action_bar=False)
+            overlay_boxes.extend(template_meta["overlay_boxes"])
+            geom_meta = template_meta["geometric_transform_meta"]
+            transforms_applied.append(template_meta["template"])
+        elif self.config.profile == "platform_ui_same_size":
+            ignore_mask = blank_mask(image.size)
+            working_image, working_mask, template_meta = render_platform_ui_same_size(image, tamper_mask, ignore_mask, rng, self.config.font_path, self.config)
             overlay_boxes.extend(template_meta["overlay_boxes"])
             geom_meta = template_meta["geometric_transform_meta"]
             transforms_applied.append(template_meta["template"])
@@ -221,7 +248,24 @@ class SNSAugV2Augmentor:
             "transforms_applied": transforms_applied,
             "postprocess_applied": postprocess_applied,
             "platform_template": self.config.platform_template,
-            "layout_only": self.config.profile in {"tiktok_like", "instagram_story_like", "youtube_shorts_like", "news_meme_overlay"},
+            "layout_only": self.config.profile in {
+                "canvas_9x16_only",
+                "canvas_9x16_full_content",
+                "platform_ui_same_size",
+                "tiktok_like",
+                "tiktok_like_no_actionbar",
+                "instagram_story_like",
+                "instagram_story_no_text_sticker",
+                "youtube_shorts_like",
+                "youtube_shorts_no_actionbar",
+                "news_meme_overlay",
+            },
+            "ui_applied": bool(template_meta.get("ui_applied", bool(overlay_boxes))),
+            "action_bar_applied": bool(template_meta.get("action_bar_applied", False)),
+            "text_sticker_applied": bool(template_meta.get("text_sticker_applied", False)),
+            "portrait_canvas_applied": bool(template_meta.get("portrait_canvas_applied", False)),
+            "maximize_content_area": bool(template_meta.get("maximize_content_area", False)),
+            "degradation_applied": bool(postprocess_applied),
             "placement_collision_guard_enabled": True,
             "placement_retries_total": int(getattr(template_meta.get("placement_manager", None), "retries_total", 0)) if isinstance(template_meta, dict) else 0,
             "placement_skipped_count": int(getattr(template_meta.get("placement_manager", None), "skipped_count", 0)) if isinstance(template_meta, dict) else 0,

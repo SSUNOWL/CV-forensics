@@ -28,6 +28,64 @@ def _portrait_canvas(image: Image.Image, mask: Image.Image | None) -> tuple[Imag
     return fit_content_to_canvas(image, mask, (540, 960), background=(14, 14, 14))
 
 
+def render_canvas_9x16_only(
+    image: Image.Image,
+    mask: Image.Image | None,
+    ignore_mask: Image.Image,
+    rng: random.Random,
+    font_path: str | None = None,
+    config: Any | None = None,
+    *,
+    maximize_content: bool = False,
+) -> tuple[Image.Image, Image.Image | None, dict[str, Any]]:
+    del rng, font_path, config
+    canvas, canvas_mask, geom = _portrait_canvas(image, mask)
+    return canvas, canvas_mask, {
+        "template": "canvas_9x16_full_content" if maximize_content else "canvas_9x16_only",
+        "overlay_boxes": [],
+        "geometric_transform_meta": geom,
+        "placement_manager": None,
+        "ui_applied": False,
+        "action_bar_applied": False,
+        "text_sticker_applied": False,
+        "portrait_canvas_applied": True,
+        "maximize_content_area": bool(maximize_content),
+    }
+
+
+def render_platform_ui_same_size(
+    image: Image.Image,
+    mask: Image.Image | None,
+    ignore_mask: Image.Image,
+    rng: random.Random,
+    font_path: str | None = None,
+    config: Any | None = None,
+) -> tuple[Image.Image, Image.Image | None, dict[str, Any]]:
+    canvas = image.copy()
+    canvas_mask = None if mask is None else mask.copy()
+    manager = PlacementManager(canvas_size=canvas.size, config=config)
+    width, height = canvas.size
+    boxes = []
+    chip_width = min(max(96, width // 3), max(96, width - 20))
+    boxes.append(_register_fixed(manager, canvas, ignore_mask, lambda: draw_labeled_chip(canvas, ignore_mask, (10, 10, 10 + chip_width, min(height, 40)), "For You", font_path=font_path), "fixed_same_size_chip", "fixed_ui_chip"))
+    boxes.append(_register_fixed(manager, canvas, ignore_mask, lambda: draw_labeled_chip(canvas, ignore_mask, (10, max(0, height - 44), min(width - 10, max(90, width // 2)), height - 10), "@layout.ablation", fill=(0, 0, 0, 170), font_path=font_path), "fixed_same_size_caption", "fixed_ui_chip"))
+    icon_x = max(24, width - 26)
+    for index, kind in enumerate(("heart", "comment", "share")):
+        y = min(height - 80, max(40, 42 + index * 40))
+        boxes.append(_register_fixed(manager, canvas, ignore_mask, lambda kind=kind, y=y: draw_simple_icon(canvas, ignore_mask, (icon_x, y), kind, radius=max(10, min(16, width // 18))), f"fixed_same_size_{kind}_{index}", f"fixed_ui_icon_{kind}"))
+    return canvas, canvas_mask, {
+        "template": "platform_ui_same_size",
+        "overlay_boxes": boxes,
+        "geometric_transform_meta": {"type": "identity"},
+        "placement_manager": manager,
+        "ui_applied": True,
+        "action_bar_applied": False,
+        "text_sticker_applied": False,
+        "portrait_canvas_applied": False,
+        "maximize_content_area": True,
+    }
+
+
 def _choose_region(
     regions: list[tuple[int, int, int, int]],
     rng: random.Random,
@@ -143,16 +201,26 @@ def _place_variable(
     return meta
 
 
-def render_tiktok_like(image: Image.Image, mask: Image.Image | None, ignore_mask: Image.Image, rng: random.Random, font_path: str | None = None, config: Any | None = None) -> tuple[Image.Image, Image.Image | None, dict[str, Any]]:
+def render_tiktok_like(
+    image: Image.Image,
+    mask: Image.Image | None,
+    ignore_mask: Image.Image,
+    rng: random.Random,
+    font_path: str | None = None,
+    config: Any | None = None,
+    *,
+    include_action_bar: bool = True,
+) -> tuple[Image.Image, Image.Image | None, dict[str, Any]]:
     canvas, canvas_mask, geom = _portrait_canvas(image, mask)
     manager = PlacementManager(canvas_size=canvas.size, config=config)
     boxes = []
     boxes.append(_register_fixed(manager, canvas, ignore_mask, lambda: draw_labeled_chip(canvas, ignore_mask, (26, 34, 138, 68), "Following", font_path=font_path), "fixed_tiktok_following", "fixed_ui_chip"))
     boxes.append(_register_fixed(manager, canvas, ignore_mask, lambda: draw_labeled_chip(canvas, ignore_mask, (146, 34, 248, 68), "For You", fill=(255, 255, 255, 180), text_fill=(0, 0, 0), font_path=font_path), "fixed_tiktok_for_you", "fixed_ui_chip"))
-    y = 260
-    for kind in ("circle", "heart", "comment", "bookmark", "share"):
-        boxes.append(_register_fixed(manager, canvas, ignore_mask, lambda kind=kind, y=y: draw_simple_icon(canvas, ignore_mask, (492, y), kind, radius=19), f"fixed_tiktok_{kind}_{y}", f"fixed_ui_icon_{kind}"))
-        y += 92
+    if include_action_bar:
+        y = 260
+        for kind in ("circle", "heart", "comment", "bookmark", "share"):
+            boxes.append(_register_fixed(manager, canvas, ignore_mask, lambda kind=kind, y=y: draw_simple_icon(canvas, ignore_mask, (492, y), kind, radius=19), f"fixed_tiktok_{kind}_{y}", f"fixed_ui_icon_{kind}"))
+            y += 92
     text_item = _place_variable(
         manager=manager,
         image=canvas,
@@ -200,17 +268,36 @@ def render_tiktok_like(image: Image.Image, mask: Image.Image | None, ignore_mask
         )
         if badge_item is not None:
             boxes.append(badge_item)
-    return canvas, canvas_mask, {"template": "tiktok_like", "overlay_boxes": boxes, "geometric_transform_meta": geom, "placement_manager": manager}
+    return canvas, canvas_mask, {
+        "template": "tiktok_like_no_actionbar" if not include_action_bar else "tiktok_like",
+        "overlay_boxes": boxes,
+        "geometric_transform_meta": geom,
+        "placement_manager": manager,
+        "ui_applied": True,
+        "action_bar_applied": bool(include_action_bar),
+        "text_sticker_applied": True,
+        "portrait_canvas_applied": True,
+        "maximize_content_area": True,
+    }
 
 
-def render_instagram_story_like(image: Image.Image, mask: Image.Image | None, ignore_mask: Image.Image, rng: random.Random, font_path: str | None = None, config: Any | None = None) -> tuple[Image.Image, Image.Image | None, dict[str, Any]]:
+def render_instagram_story_like(
+    image: Image.Image,
+    mask: Image.Image | None,
+    ignore_mask: Image.Image,
+    rng: random.Random,
+    font_path: str | None = None,
+    config: Any | None = None,
+    *,
+    include_text_sticker: bool = True,
+) -> tuple[Image.Image, Image.Image | None, dict[str, Any]]:
     canvas, canvas_mask, geom = _portrait_canvas(image, mask)
     manager = PlacementManager(canvas_size=canvas.size, config=config)
     boxes = draw_progress_bars(canvas, ignore_mask, count=5)
     for index, item in enumerate(boxes):
         manager.register_existing(element_id=f"fixed_instagram_progress_{index}", element_type="fixed_ui_progress_bar", bbox=tuple(item["box"]), alpha_mask=Image.new("L", canvas.size, 0), metadata=item)
     boxes.append(_register_fixed(manager, canvas, ignore_mask, lambda: draw_labeled_chip(canvas, ignore_mask, (20, 34, 170, 72), "@daily.story  2h", font_path=font_path), "fixed_instagram_account_row", "fixed_ui_chip"))
-    if rng.random() < 0.7:
+    if include_text_sticker and rng.random() < 0.7:
         item = _place_variable(
             manager=manager,
             image=canvas,
@@ -225,7 +312,7 @@ def render_instagram_story_like(image: Image.Image, mask: Image.Image | None, ig
         )
         if item is not None:
             boxes.append(item)
-    if rng.random() < 0.6:
+    if include_text_sticker and rng.random() < 0.6:
         item = _place_variable(
             manager=manager,
             image=canvas,
@@ -243,18 +330,38 @@ def render_instagram_story_like(image: Image.Image, mask: Image.Image | None, ig
     boxes.append(_register_fixed(manager, canvas, ignore_mask, lambda: draw_labeled_chip(canvas, ignore_mask, (28, 884, 360, 934), "Send message", fill=(255, 255, 255, 120), text_fill=(255, 255, 255), font_path=font_path), "fixed_instagram_message_bar", "fixed_ui_chip"))
     boxes.append(_register_fixed(manager, canvas, ignore_mask, lambda: draw_simple_icon(canvas, ignore_mask, (430, 908), "heart", radius=18), "fixed_instagram_heart", "fixed_ui_icon_heart"))
     boxes.append(_register_fixed(manager, canvas, ignore_mask, lambda: draw_simple_icon(canvas, ignore_mask, (484, 908), "share", radius=18), "fixed_instagram_share", "fixed_ui_icon_share"))
-    return canvas, canvas_mask, {"template": "instagram_story_like", "overlay_boxes": boxes, "geometric_transform_meta": geom, "placement_manager": manager}
+    return canvas, canvas_mask, {
+        "template": "instagram_story_no_text_sticker" if not include_text_sticker else "instagram_story_like",
+        "overlay_boxes": boxes,
+        "geometric_transform_meta": geom,
+        "placement_manager": manager,
+        "ui_applied": True,
+        "action_bar_applied": False,
+        "text_sticker_applied": bool(include_text_sticker),
+        "portrait_canvas_applied": True,
+        "maximize_content_area": True,
+    }
 
 
-def render_youtube_shorts_like(image: Image.Image, mask: Image.Image | None, ignore_mask: Image.Image, rng: random.Random, font_path: str | None = None, config: Any | None = None) -> tuple[Image.Image, Image.Image | None, dict[str, Any]]:
+def render_youtube_shorts_like(
+    image: Image.Image,
+    mask: Image.Image | None,
+    ignore_mask: Image.Image,
+    rng: random.Random,
+    font_path: str | None = None,
+    config: Any | None = None,
+    *,
+    include_action_bar: bool = True,
+) -> tuple[Image.Image, Image.Image | None, dict[str, Any]]:
     canvas, canvas_mask, geom = _portrait_canvas(image, mask)
     manager = PlacementManager(canvas_size=canvas.size, config=config)
     boxes = []
-    y = 300
-    for kind in ("heart", "cross", "comment", "share", "play"):
-        actual = "circle" if kind == "cross" else kind
-        boxes.append(_register_fixed(manager, canvas, ignore_mask, lambda actual=actual, y=y: draw_simple_icon(canvas, ignore_mask, (492, y), actual, radius=18), f"fixed_youtube_{actual}_{y}", f"fixed_ui_icon_{actual}"))
-        y += 94
+    if include_action_bar:
+        y = 300
+        for kind in ("heart", "cross", "comment", "share", "play"):
+            actual = "circle" if kind == "cross" else kind
+            boxes.append(_register_fixed(manager, canvas, ignore_mask, lambda actual=actual, y=y: draw_simple_icon(canvas, ignore_mask, (492, y), actual, radius=18), f"fixed_youtube_{actual}_{y}", f"fixed_ui_icon_{actual}"))
+            y += 94
     item = _place_variable(
         manager=manager,
         image=canvas,
@@ -286,7 +393,17 @@ def render_youtube_shorts_like(image: Image.Image, mask: Image.Image | None, ign
             boxes.append(badge)
     if rng.random() < 0.6:
         boxes.extend(draw_bottom_nav(canvas, ignore_mask, ["Home", "Shorts", "Create", "Subs", "You"], font_path=font_path))
-    return canvas, canvas_mask, {"template": "youtube_shorts_like", "overlay_boxes": boxes, "geometric_transform_meta": geom, "placement_manager": manager}
+    return canvas, canvas_mask, {
+        "template": "youtube_shorts_no_actionbar" if not include_action_bar else "youtube_shorts_like",
+        "overlay_boxes": boxes,
+        "geometric_transform_meta": geom,
+        "placement_manager": manager,
+        "ui_applied": True,
+        "action_bar_applied": bool(include_action_bar),
+        "text_sticker_applied": True,
+        "portrait_canvas_applied": True,
+        "maximize_content_area": True,
+    }
 
 
 def render_news_meme_overlay(image: Image.Image, mask: Image.Image | None, ignore_mask: Image.Image, rng: random.Random, font_path: str | None = None, config: Any | None = None) -> tuple[Image.Image, Image.Image | None, dict[str, Any]]:
@@ -347,7 +464,17 @@ def render_news_meme_overlay(image: Image.Image, mask: Image.Image | None, ignor
         item = _place_variable(manager=manager, image=canvas, ignore_mask=ignore_mask, rng=rng, element_id="news_highlight", element_type="sticker", candidate_regions=regions, base_size=(width // 3, height // 4), preview_builder=lambda rect: (lambda img, mask_img: draw_highlight_box(img, mask_img, rect)), commit_builder=lambda rect, meta: draw_highlight_box(canvas, ignore_mask, rect, meta=meta))
         if item is not None:
             boxes.append(item)
-    return canvas, canvas_mask, {"template": "news_meme_overlay", "overlay_boxes": boxes, "geometric_transform_meta": {"type": "identity"}, "placement_manager": manager}
+    return canvas, canvas_mask, {
+        "template": "news_meme_overlay",
+        "overlay_boxes": boxes,
+        "geometric_transform_meta": {"type": "identity"},
+        "placement_manager": manager,
+        "ui_applied": True,
+        "action_bar_applied": False,
+        "text_sticker_applied": True,
+        "portrait_canvas_applied": False,
+        "maximize_content_area": True,
+    }
 
 
 def render_annotation_sticker(image: Image.Image, mask: Image.Image | None, ignore_mask: Image.Image, rng: random.Random, font_path: str | None = None, config: Any | None = None) -> tuple[Image.Image, Image.Image | None, dict[str, Any]]:
@@ -377,4 +504,14 @@ def render_annotation_sticker(image: Image.Image, mask: Image.Image | None, igno
             boxes.append(item1)
         if item2 is not None:
             boxes.append(item2)
-    return canvas, canvas_mask, {"template": "annotation_sticker", "overlay_boxes": boxes, "geometric_transform_meta": {"type": "identity"}, "placement_manager": manager}
+    return canvas, canvas_mask, {
+        "template": "annotation_sticker",
+        "overlay_boxes": boxes,
+        "geometric_transform_meta": {"type": "identity"},
+        "placement_manager": manager,
+        "ui_applied": True,
+        "action_bar_applied": False,
+        "text_sticker_applied": True,
+        "portrait_canvas_applied": False,
+        "maximize_content_area": True,
+    }
