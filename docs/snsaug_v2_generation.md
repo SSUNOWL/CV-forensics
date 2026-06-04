@@ -2,6 +2,8 @@
 
 `SNSAUG_V2_GENERATION_AND_TINY_PAIRS_OK`
 
+`SNSAUG_V2_LAYOUT_ONLY_PRECISE_IGNORE_OK`
+
 This task creates SNSAug data from clean source manifests. It does not require a pre-existing SNSAug dataset. It is generation, preview, and pair-building only. It does not train or fine-tune models.
 
 ## Scope
@@ -24,6 +26,13 @@ This task creates SNSAug data from clean source manifests. It does not require a
 - `annotation_sticker`
 - `combined_sns_realistic`
 
+Postprocess-oriented profiles:
+
+- `recompression_light`
+- `resize_jpeg`
+- `screenshot_recapture`
+- `blur_color_shift`
+
 ## Mask Policy
 
 - SNSAug is benign degradation and overlay only.
@@ -34,6 +43,44 @@ This task creates SNSAug data from clean source manifests. It does not require a
 - Geometric transforms are applied identically to image and `tamper_mask`.
 - JPEG, blur, color shift, sharpen, and recompression affect image only.
 - Any mask resize uses nearest-neighbor interpolation.
+
+## Layout vs Postprocess
+
+The platform-layout profiles are layout-only by default:
+
+- `tiktok_like`
+- `instagram_story_like`
+- `youtube_shorts_like`
+- `news_meme_overlay`
+
+By default they do not apply recompression, blur, pixelation, sharpen, color shift, screenshot recapture, or intentional low-quality resampling. Only the geometric canvas placement needed to fit the platform layout is applied.
+
+If degradation is needed, use explicit postprocess profiles or enable degradation flags through `combined_sns_realistic`. The metadata records `transforms_applied` and `postprocess_applied` separately.
+
+## Alpha-Based Ignore Mask
+
+`ignore_mask` is derived from actual rendered overlay alpha, not only from coarse bounding boxes.
+
+- Hollow outline shapes such as red rectangles and circles mark only their visible outline pixels.
+- Arrow overlays mark only the rendered shaft and arrow head.
+- Filled or translucent highlight boxes mark the filled region because the pixels are changed.
+- Text, badges, and chips mark their true rendered background and glyph area.
+
+`overlay_boxes` remain coarse debug metadata only. They are useful for previews and inspection, but they are not the exact ignore-mask definition for hollow shapes.
+
+## Deterministic Placement Diversity
+
+Structural platform UI stays mostly fixed, but variable elements such as text blocks, badges, news banners, stickers, arrows, circles, speech bubbles, and annotation overlays use seed-controlled candidate regions with jitter and size variation.
+
+For the same seed:
+
+- the same placement is reproduced exactly
+
+For a different seed:
+
+- the same profile can move variable overlays within its candidate regions
+
+Metadata records the chosen candidate region, final box, jitter, size scale, and alpha-driven ignore-mask area fields for variable elements.
 
 ## Source Manifest Audit
 
@@ -86,6 +133,16 @@ Outputs:
 - `artifact_manifest.json`
 
 Each `meta.jsonl` record includes the source metadata, `view`, `profile`, `severity`, `seed`, saved artifact paths, `aug_meta`, `overlay_boxes`, and `label_preserved: true`.
+
+## Validation Checklist
+
+Before creating larger tiny/fixed pairs:
+
+- confirm layout-only profiles look visually clean without unintended low-quality degradation
+- confirm outline rectangle and outline circle overlays do not fill transparent interiors in `ignore_mask`
+- confirm seed reproducibility on the same sample
+- confirm different seeds move variable stickers, text, or badges
+- confirm `tamper_mask` remains unchanged except for explicit geometric placement transforms
 
 Example:
 

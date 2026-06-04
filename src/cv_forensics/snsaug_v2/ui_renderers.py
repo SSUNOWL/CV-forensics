@@ -24,12 +24,76 @@ def rect_to_box(rect: tuple[int, int, int, int]) -> list[int]:
     return [int(rect[0]), int(rect[1]), int(rect[2]), int(rect[3])]
 
 
-def add_ignore_rectangle(ignore_mask: Image.Image, rect: tuple[int, int, int, int], radius: int = 0) -> None:
-    draw = ImageDraw.Draw(ignore_mask)
-    if radius > 0:
-        draw.rounded_rectangle(rect, radius=radius, fill=255)
-    else:
-        draw.rectangle(rect, fill=255)
+def _overlay_area(alpha: Image.Image) -> int:
+    return int(sum(1 for value in alpha.getdata() if value > 0))
+
+
+def _apply_overlay(image: Image.Image, ignore_mask: Image.Image, overlay: Image.Image) -> tuple[int, float]:
+    composited = Image.alpha_composite(image.convert("RGBA"), overlay)
+    image.paste(composited.convert(image.mode))
+    alpha = overlay.getchannel("A")
+    ignore_mask.paste(Image.new("L", ignore_mask.size, 255), (0, 0), alpha)
+    area = _overlay_area(alpha)
+    pct = (float(area) * 100.0 / float(max(1, ignore_mask.size[0] * ignore_mask.size[1])))
+    return area, pct
+
+
+def _new_overlay(image: Image.Image) -> tuple[Image.Image, ImageDraw.ImageDraw]:
+    overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
+    return overlay, ImageDraw.Draw(overlay, "RGBA")
+
+
+def _meta(kind: str, rect: tuple[int, int, int, int], area: int, pct: float, **extra: Any) -> dict[str, Any]:
+    payload = {
+        "kind": kind,
+        "element_type": kind,
+        "box": rect_to_box(rect),
+        "final_bbox": rect_to_box(rect),
+        "alpha_mask_area_px": int(area),
+        "ignore_mask_area_pct": float(pct),
+    }
+    payload.update(extra)
+    return payload
+
+
+def clamp_rect(rect: tuple[int, int, int, int], size: tuple[int, int]) -> tuple[int, int, int, int]:
+    width, height = size
+    x1 = max(0, min(width - 1, int(rect[0])))
+    y1 = max(0, min(height - 1, int(rect[1])))
+    x2 = max(x1 + 1, min(width, int(rect[2])))
+    y2 = max(y1 + 1, min(height, int(rect[3])))
+    return (x1, y1, x2, y2)
+
+
+def place_in_region(
+    region: tuple[int, int, int, int],
+    base_size: tuple[int, int],
+    image_size: tuple[int, int],
+    rng: Any,
+    *,
+    size_jitter: float = 0.2,
+    pos_jitter: float = 0.12,
+) -> tuple[tuple[int, int, int, int], dict[str, Any]]:
+    rx1, ry1, rx2, ry2 = region
+    rw = max(1, rx2 - rx1)
+    rh = max(1, ry2 - ry1)
+    base_w, base_h = base_size
+    scale = max(0.6, 1.0 + ((rng.random() - 0.5) * 2.0 * size_jitter))
+    width = max(1, min(rw, int(round(base_w * scale))))
+    height = max(1, min(rh, int(round(base_h * scale))))
+    center_x = rx1 + rw // 2
+    center_y = ry1 + rh // 2
+    jitter_x = int(round((rng.random() - 0.5) * 2.0 * rw * pos_jitter))
+    jitter_y = int(round((rng.random() - 0.5) * 2.0 * rh * pos_jitter))
+    x1 = center_x - width // 2 + jitter_x
+    y1 = center_y - height // 2 + jitter_y
+    rect = clamp_rect((x1, y1, x1 + width, y1 + height), image_size)
+    return rect, {
+        "chosen_candidate_region": rect_to_box(region),
+        "size_scale": float(scale),
+        "jitter": [int(jitter_x), int(jitter_y)],
+        "rotation_deg": 0.0,
+    }
 
 
 def draw_labeled_chip(
@@ -42,13 +106,14 @@ def draw_labeled_chip(
     text_fill: tuple[int, int, int] = (255, 255, 255),
     outline: tuple[int, int, int] | None = None,
     font_path: str | None = None,
+    meta: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    draw = ImageDraw.Draw(image, "RGBA")
+    overlay, draw = _new_overlay(image)
     draw.rounded_rectangle(rect, radius=10, fill=fill, outline=outline)
     font = load_font(font_path, size=max(10, (rect[3] - rect[1]) // 3))
     draw.text((rect[0] + 8, rect[1] + 8), text, fill=text_fill, font=font)
-    add_ignore_rectangle(ignore_mask, rect, radius=10)
-    return {"kind": "chip", "text": text, "box": rect_to_box(rect)}
+    area, pct = _apply_overlay(image, ignore_mask, overlay)
+    return _meta("chip", rect, area, pct, text=text, **(meta or {}))
 
 
 def draw_text_block(
@@ -60,16 +125,17 @@ def draw_text_block(
     fill: tuple[int, int, int, int] = (10, 10, 10, 150),
     text_fill: tuple[int, int, int] = (255, 255, 255),
     font_path: str | None = None,
+    meta: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    draw = ImageDraw.Draw(image, "RGBA")
+    overlay, draw = _new_overlay(image)
     draw.rounded_rectangle(rect, radius=10, fill=fill)
     font = load_font(font_path, size=max(10, (rect[3] - rect[1]) // max(3, len(lines) + 1)))
     y = rect[1] + 8
     for line in lines:
         draw.text((rect[0] + 8, y), line, fill=text_fill, font=font)
         y += 14
-    add_ignore_rectangle(ignore_mask, rect, radius=10)
-    return {"kind": "text_block", "lines": list(lines), "box": rect_to_box(rect)}
+    area, pct = _apply_overlay(image, ignore_mask, overlay)
+    return _meta("text_block", rect, area, pct, lines=list(lines), **(meta or {}))
 
 
 def draw_progress_bars(image: Image.Image, ignore_mask: Image.Image, count: int = 5) -> list[dict[str, Any]]:
@@ -81,10 +147,10 @@ def draw_progress_bars(image: Image.Image, ignore_mask: Image.Image, count: int 
     for index in range(count):
         x1 = 16 + index * (bar_w + bar_gap)
         rect = (x1, 16, x1 + bar_w, 22)
-        draw = ImageDraw.Draw(image, "RGBA")
+        overlay, draw = _new_overlay(image)
         draw.rounded_rectangle(rect, radius=3, fill=(255, 255, 255, 210 if index == 0 else 120))
-        add_ignore_rectangle(ignore_mask, rect, radius=3)
-        boxes.append({"kind": "progress_bar", "box": rect_to_box(rect)})
+        area, pct = _apply_overlay(image, ignore_mask, overlay)
+        boxes.append(_meta("progress_bar", rect, area, pct))
     return boxes
 
 
@@ -96,10 +162,11 @@ def draw_simple_icon(
     radius: int = 18,
     *,
     color: tuple[int, int, int] = (255, 255, 255),
+    meta: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     cx, cy = center
     rect = (cx - radius, cy - radius, cx + radius, cy + radius)
-    draw = ImageDraw.Draw(image, "RGBA")
+    overlay, draw = _new_overlay(image)
     if kind == "heart":
         draw.ellipse((cx - radius, cy - radius + 6, cx, cy), fill=color)
         draw.ellipse((cx, cy - radius + 6, cx + radius, cy), fill=color)
@@ -119,22 +186,23 @@ def draw_simple_icon(
         draw.ellipse(rect, outline=color, width=3)
     else:
         draw.ellipse(rect, outline=color, width=3)
-    add_ignore_rectangle(ignore_mask, rect, radius=radius)
-    return {"kind": f"icon_{kind}", "box": rect_to_box(rect)}
+    area, pct = _apply_overlay(image, ignore_mask, overlay)
+    return _meta(f"icon_{kind}", rect, area, pct, **(meta or {}))
 
 
 def draw_bottom_nav(image: Image.Image, ignore_mask: Image.Image, labels: list[str], font_path: str | None = None) -> list[dict[str, Any]]:
     width, height = image.size
     rect = (0, height - 56, width, height)
-    draw = ImageDraw.Draw(image, "RGBA")
+    overlay, draw = _new_overlay(image)
     draw.rectangle(rect, fill=(0, 0, 0, 210))
-    add_ignore_rectangle(ignore_mask, rect)
     font = load_font(font_path, size=12)
     items = []
     for index, label in enumerate(labels):
         x = int((index + 0.5) * width / max(1, len(labels)))
         draw.text((x - 16, height - 34), label, fill=(255, 255, 255), font=font)
         items.append({"kind": "nav_label", "text": label, "box": [max(0, x - 22), height - 40, min(width, x + 22), height - 18]})
+    area, pct = _apply_overlay(image, ignore_mask, overlay)
+    items.insert(0, _meta("bottom_nav", rect, area, pct, labels=list(labels)))
     return items
 
 

@@ -20,6 +20,7 @@ from .transforms import (
     apply_blur_pixelation,
     apply_color_shift,
     blank_mask,
+    center_crop_resize_back,
     ensure_mask,
     ensure_rgb,
     fit_content_to_canvas,
@@ -50,6 +51,35 @@ class SNSAugV2Augmentor:
             return _float_seed(self.config.seed) + _float_seed(base_id)
         return _float_seed(base_id)
 
+    def _apply_postprocess(
+        self,
+        image: Image.Image,
+        mask: Image.Image | None,
+        rng: random.Random,
+        params: dict[str, Any],
+        transforms_applied: list[str],
+    ) -> tuple[Image.Image, Image.Image | None]:
+        working_image = image
+        working_mask = mask
+        if self.config.apply_screenshot_recapture:
+            working_image, working_mask, _ = fit_content_to_canvas(
+                working_image,
+                working_mask,
+                (working_image.size[0], int(round(working_image.size[1] * 1.06))),
+                background=(24, 24, 24),
+            )
+            transforms_applied.append("screenshot_recapture")
+        if self.config.apply_recompression:
+            working_image = recompress_jpeg(working_image, params["jpeg_quality"])
+            transforms_applied.append("jpeg_recompress")
+        if self.config.apply_color_shift:
+            working_image = apply_color_shift(working_image, rng, params["color_factor"])
+            transforms_applied.append("color_shift")
+        if self.config.apply_blur:
+            working_image = apply_blur_pixelation(working_image, params["blur_radius"], params["pixel_step"])
+            transforms_applied.append("blur_pixelation")
+        return working_image, working_mask
+
     def __call__(self, image, tamper_mask=None, label=None, base_id=None, seed=None) -> SNSAugV2Result:
         image = ensure_rgb(image)
         tamper_mask = ensure_mask(tamper_mask, image.size)
@@ -59,6 +89,7 @@ class SNSAugV2Augmentor:
         overlay_boxes: list[dict[str, Any]] = []
         geom_meta: dict[str, Any] = {"type": "identity"}
         transforms_applied: list[str] = []
+        postprocess_applied: list[str] = []
 
         working_image = image.copy()
         working_mask = None if tamper_mask is None else tamper_mask.copy()
@@ -69,6 +100,30 @@ class SNSAugV2Augmentor:
             working_image, working_mask, geom_meta = resize_long_side(working_image, working_mask, self.config.output_size or params["resize_long"])
             working_image = recompress_jpeg(working_image, params["jpeg_quality"])
             transforms_applied.extend(["resize_long_side", "jpeg_recompress"])
+            postprocess_applied.extend(["resize_long_side", "jpeg_recompress"])
+        elif self.config.profile == "recompression_light":
+            working_image = recompress_jpeg(working_image, max(86, params["jpeg_quality"]))
+            transforms_applied.append("jpeg_recompress")
+            postprocess_applied.append("jpeg_recompress")
+        elif self.config.profile == "resize_jpeg":
+            working_image, working_mask, geom_meta = resize_long_side(working_image, working_mask, self.config.output_size or params["resize_long"])
+            working_image = recompress_jpeg(working_image, params["jpeg_quality"])
+            transforms_applied.extend(["resize_long_side", "jpeg_recompress"])
+            postprocess_applied.extend(["resize_long_side", "jpeg_recompress"])
+        elif self.config.profile == "screenshot_recapture":
+            working_image, working_mask, geom_meta = fit_content_to_canvas(
+                working_image,
+                working_mask,
+                (working_image.size[0], int(round(working_image.size[1] * 1.06))),
+                background=(32, 32, 32),
+            )
+            transforms_applied.append("screenshot_recapture")
+            postprocess_applied.append("screenshot_recapture")
+        elif self.config.profile == "blur_color_shift":
+            working_image = apply_color_shift(working_image, rng, params["color_factor"])
+            working_image = apply_blur_pixelation(working_image, params["blur_radius"], params["pixel_step"])
+            transforms_applied.extend(["color_shift", "blur_pixelation"])
+            postprocess_applied.extend(["color_shift", "blur_pixelation"])
         elif self.config.profile == "screenshot_basic":
             working_image, working_mask, geom_meta = fit_content_to_canvas(working_image, working_mask, (working_image.size[0], int(round(working_image.size[1] * 1.08))), background=(32, 32, 32))
             ignore_mask = blank_mask(working_image.size)
@@ -129,6 +184,8 @@ class SNSAugV2Augmentor:
                 from .sticker_packs import draw_news_banner
 
                 overlay_boxes.append(draw_news_banner(working_image, ignore_mask, (0, 0, 170, 40), rng, self.config.font_path))
+            if self.config.apply_degradation or self.config.apply_recompression or self.config.apply_blur or self.config.apply_color_shift or self.config.apply_screenshot_recapture:
+                working_image, working_mask = self._apply_postprocess(working_image, working_mask, rng, params, postprocess_applied)
         else:
             raise ValueError(f"unsupported profile: {self.config.profile}")
         if self.config.output_size and working_image.size[0] != self.config.output_size and working_image.size[1] != self.config.output_size:
@@ -137,16 +194,20 @@ class SNSAugV2Augmentor:
             ignore_mask = ignore_mask.resize(working_image.size, Image.Resampling.NEAREST)
             geom_meta = {"base": geom_meta, "post_resize": extra_geom}
             transforms_applied.append("output_resize")
-        if self.config.profile != "clean":
-            if rng.random() < self.config.p_recompression:
-                working_image = recompress_jpeg(working_image, params["jpeg_quality"])
-                transforms_applied.append("jpeg_recompress")
-            if rng.random() < self.config.p_color_shift:
-                working_image = apply_color_shift(working_image, rng, params["color_factor"])
-                transforms_applied.append("color_shift")
-            if rng.random() < self.config.p_blur_pixelation:
-                working_image = apply_blur_pixelation(working_image, params["blur_radius"], params["pixel_step"])
-                transforms_applied.append("blur_pixelation")
+        if self.config.profile not in {
+            "clean",
+            "tiktok_like",
+            "instagram_story_like",
+            "youtube_shorts_like",
+            "news_meme_overlay",
+            "combined_sns_realistic",
+            "recompression_light",
+            "resize_jpeg",
+            "screenshot_recapture",
+            "blur_color_shift",
+        } and self.config.profile != "clean":
+            if self.config.apply_degradation:
+                working_image, working_mask = self._apply_postprocess(working_image, working_mask, rng, params, postprocess_applied)
         meta = {
             "profile": self.config.profile,
             "severity": self.config.severity,
@@ -157,6 +218,8 @@ class SNSAugV2Augmentor:
             "overlay_boxes": overlay_boxes,
             "geometric_transform_meta": geom_meta,
             "transforms_applied": transforms_applied,
+            "postprocess_applied": postprocess_applied,
             "platform_template": self.config.platform_template,
+            "layout_only": self.config.profile in {"tiktok_like", "instagram_story_like", "youtube_shorts_like", "news_meme_overlay"},
         }
         return SNSAugV2Result(image=working_image, tamper_mask=working_mask, ignore_mask=ignore_mask, meta=meta)

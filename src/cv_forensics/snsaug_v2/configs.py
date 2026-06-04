@@ -11,6 +11,10 @@ PROFILES = (
     "clean",
     "jpeg_resize",
     "screenshot_basic",
+    "recompression_light",
+    "resize_jpeg",
+    "screenshot_recapture",
+    "blur_color_shift",
     "tiktok_like",
     "instagram_story_like",
     "youtube_shorts_like",
@@ -37,6 +41,11 @@ class SNSAugV2Config:
     p_emoji_sticker: float = 0.3
     p_color_shift: float = 0.2
     p_blur_pixelation: float = 0.2
+    apply_degradation: bool = False
+    apply_recompression: bool = False
+    apply_blur: bool = False
+    apply_color_shift: bool = False
+    apply_screenshot_recapture: bool = False
     font_path: Optional[str] = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -73,6 +82,15 @@ def validate_config(config: SNSAugV2Config) -> None:
         raise ValueError("output_size must be a positive integer")
     if config.font_path is not None and not isinstance(config.font_path, str):
         raise ValueError("font_path must be a string when provided")
+    for name in (
+        "apply_degradation",
+        "apply_recompression",
+        "apply_blur",
+        "apply_color_shift",
+        "apply_screenshot_recapture",
+    ):
+        if not isinstance(getattr(config, name), bool):
+            raise ValueError(f"{name} must be a boolean")
 
 
 def load_config(path: str | Path) -> SNSAugV2Config:
