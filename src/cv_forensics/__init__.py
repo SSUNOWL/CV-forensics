@@ -39,6 +39,7 @@ from . import pre_sns_v3_v2_policy_gated_report
 from . import pre_sns_v3_v2_replay_tile_manifest
 from . import pre_sns_v3_sns_robustness_eval
 from . import pre_sns_v3_final_visual_audit
+from . import snsaug_v2
 from .inference_stub import check_fake_input_config_safety
 from .metrics import check_toy_metric_config_safety
 
@@ -84,4 +85,5 @@ __all__ = [
     "pre_sns_v3_v2_replay_tile_manifest",
     "pre_sns_v3_sns_robustness_eval",
     "pre_sns_v3_final_visual_audit",
+    "snsaug_v2",
 ]

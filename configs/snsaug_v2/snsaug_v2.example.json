@@ -1,0 +1,15 @@
+{
+  "profile": "combined_sns_realistic",
+  "severity": "medium",
+  "output_size": 960,
+  "seed": 51,
+  "platform_template": "instagram_story_like",
+  "p_recompression": 0.7,
+  "p_platform_ui": 0.8,
+  "p_ai_badge": 0.4,
+  "p_news_banner": 0.3,
+  "p_annotation_sticker": 0.4,
+  "p_emoji_sticker": 0.3,
+  "p_color_shift": 0.2,
+  "p_blur_pixelation": 0.2
+}
