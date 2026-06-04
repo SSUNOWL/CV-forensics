@@ -1,0 +1,58 @@
+{
+  "schema_version": "1.0",
+  "config_kind": "approved_snsaug_v2_training_manifest",
+  "execution_mode": "approved_local_snsaug_v2_training_manifest",
+  "train_manifest_path": "/home/rlatjswo/.codex/memories/pre_sns_train/train_manifest.json",
+  "train_mining_manifest_path": "/home/rlatjswo/.codex/memories/pre_sns_train/train_only_mining_manifest.jsonl",
+  "approved_input_roots": [
+    "/home/rlatjswo/.codex/memories/pre_sns_train"
+  ],
+  "approved_output_roots": [
+    "/home/rlatjswo/.codex/memories",
+    "/home/rlatjswo/cvf_runs"
+  ],
+  "output_root": "/home/rlatjswo/.codex/memories/snsaug_v2_training_manifest_example",
+  "seed": 53,
+  "profiles": [
+    "clean",
+    "jpeg_resize",
+    "tiktok_like",
+    "instagram_story_like",
+    "youtube_shorts_like",
+    "news_meme_overlay",
+    "annotation_sticker",
+    "combined_sns_realistic"
+  ],
+  "clean_weight": 0.3,
+  "basic_aug_weight": 0.3,
+  "sns_aug_weight": 0.4,
+  "severity_schedule": [
+    {
+      "start_epoch": 1,
+      "end_epoch": 3,
+      "clean": 0.5,
+      "basic_aug": 0.3,
+      "sns": 0.2,
+      "severity": "light"
+    },
+    {
+      "start_epoch": 4,
+      "end_epoch": 8,
+      "clean": 0.35,
+      "basic_aug": 0.3,
+      "sns": 0.35,
+      "severity": "medium"
+    },
+    {
+      "start_epoch": 9,
+      "end_epoch": null,
+      "clean": 0.25,
+      "basic_aug": 0.25,
+      "sns": 0.5,
+      "severity": "strong"
+    }
+  ],
+  "no_training": true,
+  "no_download": true,
+  "no_network": true
+}
