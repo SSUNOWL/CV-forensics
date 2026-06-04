@@ -1,0 +1,59 @@
+{
+  "schema_version": "1.0",
+  "config_kind": "approved_snsaug_v2_finetune",
+  "execution_mode": "approved_local_snsaug_v2_finetune",
+  "training_manifest_path": "/home/rlatjswo/.codex/memories/pre_sns_train/snsaug_v2_training_manifest.jsonl",
+  "best_bundle_path": "/home/rlatjswo/.codex/memories/pre_sns_bundles/pre_sns_current_best_model_bundle.json",
+  "approved_input_roots": [
+    "/home/rlatjswo/.codex/memories/pre_sns_train",
+    "/home/rlatjswo/.codex/memories/pre_sns_bundles"
+  ],
+  "approved_checkpoint_roots": [
+    "/home/rlatjswo/cvf_checkpoints",
+    "/home/rlatjswo/.codex/memories/pre_sns_bundles"
+  ],
+  "approved_output_roots": [
+    "/home/rlatjswo/.codex/memories",
+    "/home/rlatjswo/cvf_runs"
+  ],
+  "output_root": "/home/rlatjswo/.codex/memories/snsaug_v2_finetune_example",
+  "approval_text": "I_APPROVE_SNSAUG_V2_FINETUNE",
+  "seed": 54,
+  "epochs": 12,
+  "batch_size": 2,
+  "device": "cpu",
+  "lambda_mask": 1.0,
+  "lambda_family": 0.25,
+  "lambda_consistency": 0.1,
+  "curriculum": [
+    {
+      "start_epoch": 1,
+      "end_epoch": 3,
+      "clean": 0.5,
+      "basic_aug": 0.3,
+      "sns": 0.2,
+      "severity": "light"
+    },
+    {
+      "start_epoch": 4,
+      "end_epoch": 8,
+      "clean": 0.35,
+      "basic_aug": 0.3,
+      "sns": 0.35,
+      "severity": "medium"
+    },
+    {
+      "start_epoch": 9,
+      "end_epoch": null,
+      "clean": 0.25,
+      "basic_aug": 0.25,
+      "sns": 0.5,
+      "severity": "strong"
+    }
+  ],
+  "run_clean_validation": true,
+  "run_basic_validation": true,
+  "run_snsaug_validation": true,
+  "no_network": true,
+  "no_download": true
+}
