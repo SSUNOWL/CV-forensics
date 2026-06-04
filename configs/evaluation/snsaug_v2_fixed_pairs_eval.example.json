@@ -1,0 +1,31 @@
+{
+  "schema_version": "1.0",
+  "config_kind": "approved_snsaug_v2_fixed_pairs_eval",
+  "execution_mode": "approved_local_snsaug_v2_fixed_pairs_eval",
+  "user_approval_text": "I_APPROVE_SNSAUG_V2_FIXED_PAIRS_EVAL",
+  "best_bundle_path": "/home/rlatjswo/projects/cv-forensics/.local/pre_sns_current_best_model_bundle.json",
+  "pair_root": "/home/rlatjswo/.codex/memories/snsaug_pairs_eval_example",
+  "meta_jsonl_path": "/home/rlatjswo/.codex/memories/snsaug_pairs_eval_example/meta.jsonl",
+  "approved_input_roots": [
+    "/home/rlatjswo/projects/cv-forensics/.local",
+    "/home/rlatjswo/.codex/memories/snsaug_pairs_eval_example"
+  ],
+  "approved_output_roots": [
+    "/home/rlatjswo/.codex/memories/snsaug_pairs_eval_reports"
+  ],
+  "output_root": "/home/rlatjswo/.codex/memories/snsaug_pairs_eval_reports/run_0057_eval",
+  "profiles": [
+    "clean",
+    "tiktok_like",
+    "instagram_story_like",
+    "youtube_shorts_like",
+    "news_meme_overlay",
+    "combined_sns_realistic"
+  ],
+  "device": "cpu",
+  "max_samples": 20,
+  "no_training": true,
+  "no_finetune": true,
+  "no_network": true,
+  "no_download": true
+}
