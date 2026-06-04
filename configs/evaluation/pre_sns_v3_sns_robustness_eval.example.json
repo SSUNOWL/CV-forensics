@@ -1,0 +1,42 @@
+{
+  "schema_version": "1.0",
+  "config_kind": "approved_pre_sns_v3_sns_robustness_eval",
+  "execution_mode": "approved_local_pre_sns_v3_sns_robustness_eval",
+  "best_bundle_path": "/home/rlatjswo/.codex/memories/pre_sns_bundles/pre_sns_current_best_model_bundle.json",
+  "validation_manifest_path": "/home/rlatjswo/.codex/memories/pre_sns_validation/validation_manifest.json",
+  "approved_input_roots": [
+    "/home/rlatjswo/.codex/memories/pre_sns_bundles",
+    "/home/rlatjswo/.codex/memories/pre_sns_validation",
+    "/home/rlatjswo/cvf_checkpoints",
+    "/home/rlatjswo/cvf_runs"
+  ],
+  "approved_output_roots": [
+    "/home/rlatjswo/.codex/memories",
+    "/home/rlatjswo/cvf_runs"
+  ],
+  "output_root": "/home/rlatjswo/.codex/memories/pre_sns_v3_sns_robustness_eval_example",
+  "max_samples": 30,
+  "samples_per_class": 10,
+  "balanced_sampling": true,
+  "perturbations": [
+    "clean",
+    "jpeg_q95",
+    "jpeg_q85",
+    "jpeg_q75",
+    "jpeg_q60",
+    "resize_long_1080",
+    "resize_long_720",
+    "resize_long_512",
+    "resize_long_1080_jpeg_q85",
+    "resize_long_720_jpeg_q75",
+    "resize_long_512_jpeg_q75",
+    "mild_center_crop_95pct_resize_back",
+    "webp_q80"
+  ],
+  "top_n_worst_cases": 8,
+  "device": "cpu",
+  "no_training": true,
+  "no_download": true,
+  "no_network": true,
+  "no_sns_augmentation_training": true
+}
