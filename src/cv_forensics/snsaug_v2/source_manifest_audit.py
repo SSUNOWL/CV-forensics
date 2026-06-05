@@ -277,10 +277,15 @@ def validate_snsaug_v2_generation_config(raw: dict[str, Any], require_exists: bo
         seed = raw.get("seed")
         if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
             errors.append(_err("seed must be a non-negative integer"))
+    if kind == "approved_snsaug_v2_tiny_fixed_pairs" and "max_samples_per_class" not in raw:
+        errors.append(_err("max_samples_per_class is required for tiny fixed-pairs benchmark generation"))
     if "max_samples_per_class" in raw:
         value = raw.get("max_samples_per_class")
         if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
             errors.append(_err("max_samples_per_class must be a positive integer"))
+    for flag in ("allow_tampered_without_mask", "allow_missing_tampered"):
+        if flag in raw and not isinstance(raw.get(flag), bool):
+            errors.append(_err(f"{flag} must be boolean when present"))
     return errors
 
 

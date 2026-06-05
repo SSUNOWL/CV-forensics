@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import time
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -55,6 +56,10 @@ class SNSAugV2FixedPairsEvalError(ValueError):
 
 def _err(message: str) -> str:
     return f"- {message}"
+
+
+def _fmt_metric(value: Any) -> str:
+    return "NA" if value is None else f"{float(value):.4f}"
 
 
 def _real(path: str | Path) -> Path:
@@ -209,7 +214,7 @@ def _write_csv(path: Path, header: list[str], rows: list[list[Any]]) -> str:
     for row in rows:
         cells = []
         for value in row:
-            text = "" if value is None else str(value)
+            text = "NA" if value is None else str(value)
             if "," in text or "\"" in text or "\n" in text:
                 text = "\"" + text.replace("\"", "\"\"") + "\""
             cells.append(text)
@@ -488,6 +493,23 @@ def aggregate_per_profile(records: list[dict[str, Any]]) -> dict[str, dict[str, 
         real_items = [row for row in items if row["content_label"] == "real"]
         synthetic_items = [row for row in items if row["content_label"] == "synthetic"]
         tampered_items = [row for row in items if row["content_label"] == "tampered"]
+        tampered_mask_items = [row for row in tampered_items if row.get("valid_iou") is not None or row.get("raw_iou") is not None]
+        localization_activation_items = [row for row in tampered_items if row.get("localization_activated") is not None]
+        non_tampered_items = [row for row in items if row["content_label"] != "tampered"]
+        profile_warnings: list[str] = []
+        denominators = {
+            "real_fpr": len(real_items),
+            "synthetic_recall": len(synthetic_items),
+            "tampered_recall": len(tampered_items),
+            "tampered_mask_metrics": len(tampered_mask_items),
+            "localization_activation_recall": len(localization_activation_items),
+            "non_tampered_high_mask_rate": len(non_tampered_items),
+        }
+        for metric_name, denominator in denominators.items():
+            if denominator == 0:
+                message = f"profile {profile}: denominator for {metric_name} is zero; metric is NA"
+                warnings.warn(message, RuntimeWarning, stacklevel=2)
+                profile_warnings.append(message)
         valid_ious = [float(row["valid_iou"]) for row in tampered_items if row.get("valid_iou") is not None]
         raw_ious = [float(row["raw_iou"]) for row in tampered_items if row.get("raw_iou") is not None]
         valid_dices = [float(row["valid_dice"]) for row in tampered_items if row.get("valid_dice") is not None]
@@ -498,22 +520,28 @@ def aggregate_per_profile(records: list[dict[str, Any]]) -> dict[str, dict[str, 
             "accuracy": sum(1 for row in items if row.get("class_correct")) / len(items) if items else 0.0,
             "macro_f1": cls["macro_f1"],
             "confusion_matrix": matrix,
-            "real_fpr": (sum(1 for row in real_items if row.get("pred_class") != "real") / len(real_items)) if real_items else 0.0,
-            "synthetic_recall": cls["per_class"]["synthetic"]["recall"],
-            "tampered_recall": cls["per_class"]["tampered"]["recall"],
+            "class_count_real": len(real_items),
+            "class_count_synthetic": len(synthetic_items),
+            "class_count_tampered": len(tampered_items),
+            "tampered_mask_eval_count": len(tampered_mask_items),
+            "localization_activation_denominator": len(localization_activation_items),
+            "real_fpr": (sum(1 for row in real_items if row.get("pred_class") != "real") / len(real_items)) if real_items else None,
+            "synthetic_recall": cls["per_class"]["synthetic"]["recall"] if synthetic_items else None,
+            "tampered_recall": cls["per_class"]["tampered"]["recall"] if tampered_items else None,
             "tampered_raw_mean_iou": _mean(raw_ious),
             "tampered_raw_median_iou": _median(raw_ious),
             "tampered_valid_mean_iou": _mean(valid_ious),
             "tampered_valid_median_iou": _median(valid_ious),
             "tampered_valid_mean_dice": _mean(valid_dices),
             "mean_p_tampered_on_tampered": _mean(tampered_scores),
-            "localization_activation_recall": (sum(1 for row in tampered_items if row.get("localization_activated")) / len(tampered_items)) if tampered_items else None,
+            "localization_activation_recall": (sum(1 for row in localization_activation_items if row.get("localization_activated")) / len(localization_activation_items)) if localization_activation_items else None,
             "non_tampered_high_mask_rate": (
-                sum(1 for row in items if row["content_label"] != "tampered" and float(row.get("final_mask_area_pct") or 0.0) > NON_TAMPERED_HIGH_MASK_THRESHOLD_PCT)
-                / max(1, sum(1 for row in items if row["content_label"] != "tampered"))
-            ) if any(row["content_label"] != "tampered" for row in items) else 0.0,
+                sum(1 for row in non_tampered_items if float(row.get("final_mask_area_pct") or 0.0) > NON_TAMPERED_HIGH_MASK_THRESHOLD_PCT)
+                / len(non_tampered_items)
+            ) if non_tampered_items else None,
             "mean_latency_ms": _mean(latencies),
             "fps": (1000.0 / _mean(latencies)) if latencies and _mean(latencies) not in {None, 0.0} else None,
+            "warnings": profile_warnings,
         }
     return out
 
@@ -521,20 +549,25 @@ def aggregate_per_profile(records: list[dict[str, Any]]) -> dict[str, dict[str, 
 def robustness_drop_metrics(comparisons: list[dict[str, Any]], per_profile: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
     clean = per_profile.get("clean", {})
     out: dict[str, dict[str, Any]] = {}
+    def _drop(left: Any, right: Any) -> float | None:
+        if left is None or right is None:
+            return None
+        return float(left) - float(right)
+
     for profile, metrics in per_profile.items():
         if profile == "clean":
             continue
         tampered_rows = [row for row in comparisons if row["profile"] == profile and row["content_label"] == "tampered"]
         p_drops = [float(row["p_tampered_drop"]) for row in tampered_rows if row.get("p_tampered_drop") is not None]
         out[profile] = {
-            "accuracy_drop": float(clean.get("accuracy") or 0.0) - float(metrics.get("accuracy") or 0.0),
-            "macro_f1_drop": float(clean.get("macro_f1") or 0.0) - float(metrics.get("macro_f1") or 0.0),
-            "real_fpr_increase": float(metrics.get("real_fpr") or 0.0) - float(clean.get("real_fpr") or 0.0),
-            "synthetic_recall_drop": float(clean.get("synthetic_recall") or 0.0) - float(metrics.get("synthetic_recall") or 0.0),
-            "tampered_recall_drop": float(clean.get("tampered_recall") or 0.0) - float(metrics.get("tampered_recall") or 0.0),
-            "valid_iou_drop": float(clean.get("tampered_valid_mean_iou") or 0.0) - float(metrics.get("tampered_valid_mean_iou") or 0.0),
-            "raw_iou_drop": float(clean.get("tampered_raw_mean_iou") or 0.0) - float(metrics.get("tampered_raw_mean_iou") or 0.0),
-            "localization_activation_recall_drop": float(clean.get("localization_activation_recall") or 0.0) - float(metrics.get("localization_activation_recall") or 0.0),
+            "accuracy_drop": _drop(clean.get("accuracy"), metrics.get("accuracy")),
+            "macro_f1_drop": _drop(clean.get("macro_f1"), metrics.get("macro_f1")),
+            "real_fpr_increase": _drop(metrics.get("real_fpr"), clean.get("real_fpr")),
+            "synthetic_recall_drop": _drop(clean.get("synthetic_recall"), metrics.get("synthetic_recall")),
+            "tampered_recall_drop": _drop(clean.get("tampered_recall"), metrics.get("tampered_recall")),
+            "valid_iou_drop": _drop(clean.get("tampered_valid_mean_iou"), metrics.get("tampered_valid_mean_iou")),
+            "raw_iou_drop": _drop(clean.get("tampered_raw_mean_iou"), metrics.get("tampered_raw_mean_iou")),
+            "localization_activation_recall_drop": _drop(clean.get("localization_activation_recall"), metrics.get("localization_activation_recall")),
             "mean_p_tampered_drop_on_tampered": _mean(p_drops),
         }
     return out
@@ -642,7 +675,7 @@ def render_small_benchmark_summary(
         if not metrics:
             continue
         lines.append(
-            f"| {profile} | {float(metrics.get('accuracy') or 0.0):.4f} | {float(metrics.get('macro_f1') or 0.0):.4f} | {float(metrics.get('tampered_recall') or 0.0):.4f} | {float(metrics.get('tampered_valid_mean_iou') or 0.0):.4f} | {float(metrics.get('mean_p_tampered_on_tampered') or 0.0):.4f} |"
+            f"| {profile} | {_fmt_metric(metrics.get('accuracy'))} | {_fmt_metric(metrics.get('macro_f1'))} | {_fmt_metric(metrics.get('tampered_recall'))} | {_fmt_metric(metrics.get('tampered_valid_mean_iou'))} | {_fmt_metric(metrics.get('mean_p_tampered_on_tampered'))} |"
         )
     lines.extend(
         [
@@ -655,7 +688,7 @@ def render_small_benchmark_summary(
     )
     for profile, metrics in drop_metrics.items():
         lines.append(
-            f"| {profile} | {float(metrics.get('accuracy_drop') or 0.0):.4f} | {float(metrics.get('tampered_recall_drop') or 0.0):.4f} | {float(metrics.get('valid_iou_drop') or 0.0):.4f} | {float(metrics.get('mean_p_tampered_drop_on_tampered') or 0.0):.4f} |"
+            f"| {profile} | {_fmt_metric(metrics.get('accuracy_drop'))} | {_fmt_metric(metrics.get('tampered_recall_drop'))} | {_fmt_metric(metrics.get('valid_iou_drop'))} | {_fmt_metric(metrics.get('mean_p_tampered_drop_on_tampered'))} |"
         )
     if interpretation.get("notes"):
         lines.extend(["", "## Interpretation", ""])
@@ -675,6 +708,8 @@ def run_snsaug_v2_fixed_pairs_eval(config: dict[str, Any]) -> dict[str, Any]:
     records = evaluate_rows(bundle, config, parsed_rows)
     comparisons = join_clean_and_sns(records)
     per_profile = aggregate_per_profile(records)
+    denominator_warnings = [message for metrics in per_profile.values() for message in metrics.get("warnings", [])]
+    warnings.extend(denominator_warnings)
     drop_metrics = robustness_drop_metrics(comparisons, per_profile)
     worst = worst_samples(comparisons)
     fragile = fragile_candidates(comparisons)
@@ -735,11 +770,16 @@ def run_snsaug_v2_fixed_pairs_eval(config: dict[str, Any]) -> dict[str, Any]:
     _write_text(output_root / "small_benchmark_summary.md", render_small_benchmark_summary(summary, per_profile, drop_metrics, interpretation))
     _write_csv(
         output_root / "small_benchmark_metrics_table.csv",
-        ["profile", "sample_count", "accuracy", "macro_f1", "real_fpr", "synthetic_recall", "tampered_recall", "localization_activation_recall", "tampered_raw_mean_iou", "tampered_valid_mean_iou", "tampered_valid_mean_dice", "non_tampered_high_mask_rate", "mean_p_tampered_on_tampered", "mean_latency_ms", "fps"],
+        ["profile", "sample_count", "class_count_real", "class_count_synthetic", "class_count_tampered", "tampered_mask_eval_count", "localization_activation_denominator", "accuracy", "macro_f1", "real_fpr", "synthetic_recall", "tampered_recall", "localization_activation_recall", "tampered_raw_mean_iou", "tampered_valid_mean_iou", "tampered_valid_mean_dice", "non_tampered_high_mask_rate", "mean_p_tampered_on_tampered", "mean_latency_ms", "fps"],
         [
             [
                 profile,
                 metrics.get("sample_count"),
+                metrics.get("class_count_real"),
+                metrics.get("class_count_synthetic"),
+                metrics.get("class_count_tampered"),
+                metrics.get("tampered_mask_eval_count"),
+                metrics.get("localization_activation_denominator"),
                 metrics.get("accuracy"),
                 metrics.get("macro_f1"),
                 metrics.get("real_fpr"),

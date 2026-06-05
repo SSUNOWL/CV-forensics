@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -25,18 +26,95 @@ def _normalize_label(sample: dict[str, Any]) -> str:
     return "synthetic" if label == "full_synthetic" else label
 
 
-def _select_samples(samples: list[dict[str, Any]], max_samples: int, samples_per_class: int | None) -> list[dict[str, Any]]:
-    if samples_per_class is None:
-        return samples[:max_samples]
-    buckets = {"real": [], "synthetic": [], "tampered": []}
+CLASS_LABELS = ("real", "synthetic", "tampered")
+
+
+class SNSAugV2PairGenerationError(ValueError):
+    """Raised when fixed-pair generation cannot satisfy required benchmark sanity."""
+
+
+def _valid_mask_path(sample: dict[str, Any]) -> bool:
+    mask_path = sample.get("tamper_mask_path") or sample.get("mask_path") or sample.get("source_mask_path")
+    return isinstance(mask_path, str) and bool(mask_path.strip()) and Path(mask_path).is_file()
+
+
+def _select_samples(
+    samples: list[dict[str, Any]],
+    max_samples: int,
+    samples_per_class: int | None,
+    *,
+    require_tampered_masks: bool = True,
+    allow_missing_tampered: bool = False,
+    allow_tampered_without_mask: bool = False,
+) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any], list[str]]:
+    warnings_out: list[str] = []
+    class_counts = {label: 0 for label in CLASS_LABELS}
+    tampered_base_count = 0
+    tampered_with_valid_mask_count = 0
+    tampered_missing_mask_count = 0
+    examples_missing_mask: list[str] = []
     for sample in samples:
         label = _normalize_label(sample)
-        if label in buckets and len(buckets[label]) < samples_per_class:
-            buckets[label].append(sample)
-    selected: list[dict[str, Any]] = []
-    for label in ("real", "synthetic", "tampered"):
-        selected.extend(buckets[label])
-    return selected[:max_samples]
+        if label not in class_counts:
+            continue
+        class_counts[label] += 1
+        if label == "tampered":
+            tampered_base_count += 1
+            if _valid_mask_path(sample):
+                tampered_with_valid_mask_count += 1
+            else:
+                tampered_missing_mask_count += 1
+                if len(examples_missing_mask) < 5:
+                    examples_missing_mask.append(str(sample.get("base_id") or sample.get("sample_id") or sample.get("id") or sample.get("image_path") or "unknown"))
+
+    if samples_per_class is not None:
+        if tampered_base_count == 0 and not allow_missing_tampered:
+            raise SNSAugV2PairGenerationError("tampered class count is zero; use allow_missing_tampered only for explicit diagnostics")
+        if require_tampered_masks and tampered_with_valid_mask_count == 0 and not allow_tampered_without_mask:
+            raise SNSAugV2PairGenerationError("tampered_with_valid_mask_count is zero; use allow_tampered_without_mask only for explicit diagnostics")
+
+    if samples_per_class is None:
+        selected = samples[:max_samples]
+    else:
+        minimum_balanced_count = samples_per_class * len(CLASS_LABELS)
+        if max_samples < minimum_balanced_count:
+            raise SNSAugV2PairGenerationError(
+                f"max_samples={max_samples} is smaller than the balanced requested count {minimum_balanced_count}"
+            )
+        buckets = {label: [] for label in CLASS_LABELS}
+        for sample in samples:
+            label = _normalize_label(sample)
+            if label not in buckets:
+                continue
+            if label == "tampered" and require_tampered_masks and not allow_tampered_without_mask and not _valid_mask_path(sample):
+                continue
+            if len(buckets[label]) < samples_per_class:
+                buckets[label].append(sample)
+        selected = []
+        for label in CLASS_LABELS:
+            if len(buckets[label]) < samples_per_class:
+                message = f"requested {samples_per_class} {label} samples but selected {len(buckets[label])}"
+                warnings.warn(message, RuntimeWarning, stacklevel=2)
+                warnings_out.append(message)
+            selected.extend(buckets[label])
+
+    selected_per_class = {label: 0 for label in CLASS_LABELS}
+    for sample in selected:
+        label = _normalize_label(sample)
+        if label in selected_per_class:
+            selected_per_class[label] += 1
+    class_balance_summary = {
+        "requested_per_class": samples_per_class,
+        "selected_per_class": selected_per_class,
+        "available_per_class": class_counts,
+    }
+    mask_summary = {
+        "tampered_base_count": tampered_base_count,
+        "tampered_with_valid_mask_count": tampered_with_valid_mask_count,
+        "tampered_missing_mask_count": tampered_missing_mask_count,
+        "examples_missing_mask": examples_missing_mask,
+    }
+    return selected, class_balance_summary, mask_summary, warnings_out
 
 
 def _write_json(path: Path, payload: Any) -> str:
@@ -73,6 +151,9 @@ class SNSAugV2PairGenerator:
         output_size: int | None = None,
         font_path: str | None = None,
         include_debug_overlays: bool = True,
+        require_tampered_masks: bool = True,
+        allow_tampered_without_mask: bool = False,
+        allow_missing_tampered: bool = False,
     ) -> None:
         self.input_manifest = Path(source_manifest_path or input_manifest or "")
         self.output_root = Path(output_root)
@@ -85,6 +166,9 @@ class SNSAugV2PairGenerator:
         self.output_size = output_size
         self.font_path = font_path
         self.include_debug_overlays = bool(include_debug_overlays)
+        self.require_tampered_masks = bool(require_tampered_masks)
+        self.allow_tampered_without_mask = bool(allow_tampered_without_mask)
+        self.allow_missing_tampered = bool(allow_missing_tampered)
 
     def _save_image(self, image: Image.Image, path: Path) -> str:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -107,7 +191,14 @@ class SNSAugV2PairGenerator:
         output_root.mkdir(parents=True, exist_ok=True)
         audit = audit_source_manifest(self.input_manifest, output_root=output_root, fail_fast=False)
         valid_rows = audit["valid_records"]
-        selected = _select_samples(valid_rows, self.max_samples, self.samples_per_class)
+        selected, class_balance_summary, mask_summary, selection_warnings = _select_samples(
+            valid_rows,
+            self.max_samples,
+            self.samples_per_class,
+            require_tampered_masks=self.require_tampered_masks,
+            allow_missing_tampered=self.allow_missing_tampered,
+            allow_tampered_without_mask=self.allow_tampered_without_mask,
+        )
 
         rows: list[dict[str, Any]] = []
         pair_index: list[dict[str, Any]] = []
@@ -205,11 +296,26 @@ class SNSAugV2PairGenerator:
 
         meta_path = _write_jsonl(output_root / "meta.jsonl", rows)
         pair_index_path = _write_json(output_root / "pair_index.json", {"pairs": pair_index})
+        profile_count = 1 + len([profile for profile in self.profiles if profile != "clean"])
+        rows_per_profile = {profile: sum(1 for row in rows if row.get("profile") == profile) for profile in sorted({str(row.get("profile")) for row in rows})}
+        class_balance_summary.update(
+            {
+                "base_count": len(selected),
+                "rows_per_profile": rows_per_profile,
+                "profile_count": profile_count,
+                "expected_record_count": len(selected) * profile_count,
+                "actual_record_count": len(rows),
+            }
+        )
+        class_balance_summary_path = _write_json(output_root / "class_balance_summary.json", class_balance_summary)
+        mask_availability_summary_path = _write_json(output_root / "mask_availability_summary.json", mask_summary)
         artifact_manifest = {
             "source_manifest_path": str(self.input_manifest),
             "source_manifest_audit_summary": audit["audit_summary_path"],
             "meta_jsonl": meta_path,
             "pair_index_json": pair_index_path,
+            "class_balance_summary_json": class_balance_summary_path,
+            "mask_availability_summary_json": mask_availability_summary_path,
             "images_dir": str(images_dir),
             "tamper_masks_dir": str(masks_dir),
             "ignore_masks_dir": str(ignore_dir),
@@ -217,6 +323,7 @@ class SNSAugV2PairGenerator:
             "sample_count": len(selected),
             "profiles": self.profiles,
             "severity": self.severity,
+            "warnings": selection_warnings,
         }
         artifact_manifest_path = _write_json(output_root / "artifact_manifest.json", artifact_manifest)
         artifact_manifest["artifact_manifest_path"] = artifact_manifest_path
