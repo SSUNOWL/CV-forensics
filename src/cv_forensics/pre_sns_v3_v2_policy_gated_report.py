@@ -562,7 +562,10 @@ def build_policy_gated_record(config: dict[str, Any], sample: dict[str, Any], in
     reliability_reasons: list[str] = []
     v2_model_info: dict[str, Any] = {}
 
-    if str(long_report["class"]) == "tampered":
+    force_tile_localization = bool(sample.get("force_tile_localization") or config.get("force_tile_localization"))
+    tile_localization_activated = str(long_report["class"]) == "tampered" or force_tile_localization
+
+    if tile_localization_activated:
         v2_result = run_tile_localizer_v2(config, sample, width, height, baseline_mask=baseline_mask)
         v2_values = list(v2_result.get("values", []))
         v2_model_info = dict(v2_result.get("model_info", {}))
@@ -610,7 +613,8 @@ def build_policy_gated_record(config: dict[str, Any], sample: dict[str, Any], in
         "family_conf": long_report["family_conf"],
         "primary_detector": "clean_long256",
         "conditional_localizer": "tile_localizer_v2",
-        "tile_localization_activated": str(long_report["class"]) == "tampered",
+        "tile_localization_activated": tile_localization_activated,
+        "tile_localization_forced": force_tile_localization,
         "localized_evidence_status": localized_evidence_status,
         "final_mask_source": final_mask_source,
         "mask_threshold": threshold,
