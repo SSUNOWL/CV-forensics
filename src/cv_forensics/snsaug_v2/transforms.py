@@ -77,6 +77,75 @@ def fit_content_to_canvas(
     }
 
 
+def resize_crop_pad_to_ratio(
+    image: Image.Image,
+    mask: Image.Image | None,
+    target_ratio: tuple[int, int],
+    background: tuple[int, int, int] = (18, 18, 18),
+) -> tuple[Image.Image, Image.Image | None, dict[str, Any]]:
+    width, height = image.size
+    ratio_w, ratio_h = target_ratio
+    target = float(ratio_w) / float(ratio_h)
+    current = float(width) / float(height)
+    if abs(current - target) < 1e-6:
+        return image.copy(), None if mask is None else mask.copy(), {
+            "type": "resize_crop_pad",
+            "mode": "identity",
+            "target_ratio": [ratio_w, ratio_h],
+        }
+    if current > target:
+        new_height = height
+        new_width = max(1, int(round(height * target)))
+        x1 = max(0, (width - new_width) // 2)
+        box = (x1, 0, x1 + new_width, height)
+        out_image = image.crop(box)
+        out_mask = mask.crop(box) if mask is not None else None
+        return out_image, out_mask, {
+            "type": "resize_crop_pad",
+            "mode": "crop_width",
+            "target_ratio": [ratio_w, ratio_h],
+            "crop_box": list(box),
+        }
+    new_width = width
+    new_height = max(1, int(round(width / target)))
+    y = max(0, (new_height - height) // 2)
+    canvas = Image.new("RGB", (new_width, new_height), background)
+    canvas.paste(image, (0, y))
+    canvas_mask = None
+    if mask is not None:
+        canvas_mask = Image.new("L", (new_width, new_height), 0)
+        canvas_mask.paste(mask, (0, y))
+    return canvas, canvas_mask, {
+        "type": "resize_crop_pad",
+        "mode": "pad_height",
+        "target_ratio": [ratio_w, ratio_h],
+        "offset": [0, y],
+        "canvas_size": [new_width, new_height],
+    }
+
+
+def zoom_crop_back(
+    image: Image.Image,
+    mask: Image.Image | None,
+    scale: float,
+) -> tuple[Image.Image, Image.Image | None, dict[str, Any]]:
+    width, height = image.size
+    scaled_size = (max(1, int(round(width * scale))), max(1, int(round(height * scale))))
+    scaled_image = image.resize(scaled_size, Image.Resampling.BILINEAR)
+    scaled_mask = mask.resize(scaled_size, Image.Resampling.NEAREST) if mask is not None else None
+    x1 = max(0, (scaled_size[0] - width) // 2)
+    y1 = max(0, (scaled_size[1] - height) // 2)
+    box = (x1, y1, x1 + width, y1 + height)
+    out_image = scaled_image.crop(box)
+    out_mask = scaled_mask.crop(box) if scaled_mask is not None else None
+    return out_image, out_mask, {
+        "type": "zoom_crop_back",
+        "scale": float(scale),
+        "scaled_size": list(scaled_size),
+        "crop_box": list(box),
+    }
+
+
 def center_crop_resize_back(
     image: Image.Image,
     mask: Image.Image | None,

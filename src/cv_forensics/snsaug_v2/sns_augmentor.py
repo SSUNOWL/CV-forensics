@@ -27,8 +27,10 @@ from .transforms import (
     ensure_rgb,
     fit_content_to_canvas,
     recompress_jpeg,
+    resize_crop_pad_to_ratio,
     resize_long_side,
     severity_values,
+    zoom_crop_back,
 )
 
 
@@ -108,9 +110,21 @@ class SNSAugV2Augmentor:
             working_image = recompress_jpeg(working_image, max(86, params["jpeg_quality"]))
             transforms_applied.append("jpeg_recompress")
             postprocess_applied.append("jpeg_recompress")
+        elif self.config.profile == "resize_crop_pad":
+            ratios = ((1, 1), (4, 5), (9, 16), (16, 9))
+            ratio = ratios[int(rng.random() * len(ratios)) % len(ratios)]
+            working_image, working_mask, geom_meta = resize_crop_pad_to_ratio(working_image, working_mask, ratio)
+            transforms_applied.append("resize_crop_pad")
+        elif self.config.profile == "zoom_crop":
+            scale = 1.05 + (rng.random() * 0.25)
+            working_image, working_mask, geom_meta = zoom_crop_back(working_image, working_mask, scale)
+            transforms_applied.append("zoom_crop")
         elif self.config.profile == "resize_jpeg":
-            working_image, working_mask, geom_meta = resize_long_side(working_image, working_mask, self.config.output_size or params["resize_long"])
-            working_image = recompress_jpeg(working_image, params["jpeg_quality"])
+            long_side_choices = (512, 720, 1080)
+            long_side = self.config.output_size or long_side_choices[int(rng.random() * len(long_side_choices)) % len(long_side_choices)]
+            quality = 70 + int(rng.random() * 21)
+            working_image, working_mask, geom_meta = resize_long_side(working_image, working_mask, long_side)
+            working_image = recompress_jpeg(working_image, quality)
             transforms_applied.extend(["resize_long_side", "jpeg_recompress"])
             postprocess_applied.extend(["resize_long_side", "jpeg_recompress"])
         elif self.config.profile == "screenshot_recapture":
@@ -122,6 +136,19 @@ class SNSAugV2Augmentor:
             )
             transforms_applied.append("screenshot_recapture")
             postprocess_applied.append("screenshot_recapture")
+        elif self.config.profile == "screenshot_recapture_light":
+            working_image, working_mask, geom_meta = fit_content_to_canvas(
+                working_image,
+                working_mask,
+                (working_image.size[0], int(round(working_image.size[1] * 1.10))),
+                background=(28, 28, 28),
+            )
+            ignore_mask = blank_mask(working_image.size)
+            from .ui_renderers import draw_labeled_chip
+
+            overlay_boxes.append(draw_labeled_chip(working_image, ignore_mask, (8, 6, min(110, working_image.size[0] - 8), 28), "09:41", fill=(0, 0, 0, 220)))
+            overlay_boxes.append(draw_labeled_chip(working_image, ignore_mask, (8, working_image.size[1] - 28, min(150, working_image.size[0] - 8), working_image.size[1] - 8), "capture bar", fill=(0, 0, 0, 220)))
+            transforms_applied.append("screenshot_recapture_light")
         elif self.config.profile == "blur_color_shift":
             working_image = apply_color_shift(working_image, rng, params["color_factor"])
             working_image = apply_blur_pixelation(working_image, params["blur_radius"], params["pixel_step"])
@@ -224,6 +251,8 @@ class SNSAugV2Augmentor:
             transforms_applied.append("output_resize")
         if self.config.profile not in {
             "clean",
+            "resize_crop_pad",
+            "zoom_crop",
             "tiktok_like",
             "instagram_story_like",
             "youtube_shorts_like",
@@ -232,7 +261,14 @@ class SNSAugV2Augmentor:
             "recompression_light",
             "resize_jpeg",
             "screenshot_recapture",
+            "screenshot_recapture_light",
             "blur_color_shift",
+            "canvas_9x16_only",
+            "canvas_9x16_full_content",
+            "platform_ui_same_size",
+            "tiktok_like_no_actionbar",
+            "instagram_story_no_text_sticker",
+            "youtube_shorts_no_actionbar",
         } and self.config.profile != "clean":
             if self.config.apply_degradation:
                 working_image, working_mask = self._apply_postprocess(working_image, working_mask, rng, params, postprocess_applied)
@@ -252,6 +288,8 @@ class SNSAugV2Augmentor:
                 "canvas_9x16_only",
                 "canvas_9x16_full_content",
                 "platform_ui_same_size",
+                "resize_crop_pad",
+                "zoom_crop",
                 "tiktok_like",
                 "tiktok_like_no_actionbar",
                 "instagram_story_like",
@@ -259,6 +297,7 @@ class SNSAugV2Augmentor:
                 "youtube_shorts_like",
                 "youtube_shorts_no_actionbar",
                 "news_meme_overlay",
+                "screenshot_recapture_light",
             },
             "ui_applied": bool(template_meta.get("ui_applied", bool(overlay_boxes))),
             "action_bar_applied": bool(template_meta.get("action_bar_applied", False)),

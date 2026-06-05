@@ -159,6 +159,8 @@ class SNSAugV2PairGenerator:
             pair = {"base_id": base_id, "content_label": label, "views": [clean_row]}
 
             for profile_index, profile in enumerate(self.profiles):
+                if profile == "clean":
+                    continue
                 cfg = SNSAugV2Config(
                     profile=profile,
                     severity=self.severity,

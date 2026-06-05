@@ -29,9 +29,14 @@ APPROVAL_TEXT = "I_APPROVE_SNSAUG_V2_FIXED_PAIRS_EVAL"
 CLASS_LABELS = ("real", "synthetic", "tampered")
 SUPPORTED_PROFILES = (
     "clean",
+    "resize_crop_pad",
+    "zoom_crop",
     "canvas_9x16_only",
     "canvas_9x16_full_content",
     "platform_ui_same_size",
+    "recompression_light",
+    "resize_jpeg",
+    "screenshot_recapture_light",
     "tiktok_like_no_actionbar",
     "instagram_story_no_text_sticker",
     "youtube_shorts_no_actionbar",
@@ -189,6 +194,28 @@ def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> str:
             handle.write(json.dumps(json_safe(row), sort_keys=True))
             handle.write("\n")
     return str(path)
+
+
+def _write_text(path: Path, text: str) -> str:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(text)
+    return str(path)
+
+
+def _write_csv(path: Path, header: list[str], rows: list[list[Any]]) -> str:
+    escaped: list[str] = []
+    lines = [",".join(header)]
+    for row in rows:
+        cells = []
+        for value in row:
+            text = "" if value is None else str(value)
+            if "," in text or "\"" in text or "\n" in text:
+                text = "\"" + text.replace("\"", "\"\"") + "\""
+            cells.append(text)
+        lines.append(",".join(cells))
+    escaped = lines
+    return _write_text(path, "\n".join(escaped) + "\n")
 
 
 def load_meta_rows(path: str | Path) -> list[dict[str, Any]]:
@@ -464,6 +491,7 @@ def aggregate_per_profile(records: list[dict[str, Any]]) -> dict[str, dict[str, 
         valid_ious = [float(row["valid_iou"]) for row in tampered_items if row.get("valid_iou") is not None]
         raw_ious = [float(row["raw_iou"]) for row in tampered_items if row.get("raw_iou") is not None]
         valid_dices = [float(row["valid_dice"]) for row in tampered_items if row.get("valid_dice") is not None]
+        tampered_scores = [float(row["p_tampered"]) for row in tampered_items if row.get("p_tampered") is not None]
         latencies = [float(row["latency_ms"]) for row in items if row.get("latency_ms") is not None]
         out[profile] = {
             "sample_count": len(items),
@@ -478,6 +506,7 @@ def aggregate_per_profile(records: list[dict[str, Any]]) -> dict[str, dict[str, 
             "tampered_valid_mean_iou": _mean(valid_ious),
             "tampered_valid_median_iou": _median(valid_ious),
             "tampered_valid_mean_dice": _mean(valid_dices),
+            "mean_p_tampered_on_tampered": _mean(tampered_scores),
             "localization_activation_recall": (sum(1 for row in tampered_items if row.get("localization_activated")) / len(tampered_items)) if tampered_items else None,
             "non_tampered_high_mask_rate": (
                 sum(1 for row in items if row["content_label"] != "tampered" and float(row.get("final_mask_area_pct") or 0.0) > NON_TAMPERED_HIGH_MASK_THRESHOLD_PCT)
@@ -536,6 +565,105 @@ def fragile_candidates(comparisons: list[dict[str, Any]]) -> list[dict[str, Any]
     ]
 
 
+def build_small_benchmark_interpretation(
+    per_profile: dict[str, dict[str, Any]],
+    drop_metrics: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    collapse_profiles = [
+        profile
+        for profile, metrics in drop_metrics.items()
+        if float(metrics.get("tampered_recall_drop") or 0.0) >= 0.5 or float(metrics.get("localization_activation_recall_drop") or 0.0) >= 0.5
+    ]
+    main_cause = "unclear"
+    if "canvas_9x16_only" in collapse_profiles:
+        main_cause = "geometry_canvas_aspect_ratio"
+    elif "recompression_light" in collapse_profiles:
+        main_cause = "compression_postprocess"
+    elif any(profile in collapse_profiles for profile in ("tiktok_like", "instagram_story_like", "youtube_shorts_like")):
+        main_cause = "layout_overlay"
+    safe_profiles = [
+        profile
+        for profile, metrics in drop_metrics.items()
+        if float(metrics.get("accuracy_drop") or 0.0) <= 0.15 and float(metrics.get("tampered_recall_drop") or 0.0) <= 0.20
+    ]
+    too_severe = [
+        profile
+        for profile, metrics in drop_metrics.items()
+        if float(metrics.get("tampered_recall_drop") or 0.0) >= 0.4 or float(metrics.get("valid_iou_drop") or 0.0) >= 0.25
+    ]
+    recommended_mix = {
+        "early_curriculum": [profile for profile in ("platform_ui_same_size", "recompression_light", "news_meme_overlay") if profile in drop_metrics and profile not in too_severe],
+        "mid_curriculum": [profile for profile in ("resize_crop_pad", "zoom_crop", "resize_jpeg", "screenshot_recapture_light") if profile in drop_metrics],
+        "late_curriculum": [profile for profile in ("canvas_9x16_only", "combined_sns_realistic", "tiktok_like", "instagram_story_like", "youtube_shorts_like") if profile in drop_metrics],
+    }
+    notes = []
+    if "canvas_9x16_only" in collapse_profiles:
+        notes.append("geometry/canvas robustness should be prioritized because canvas_9x16_only collapses.")
+    if per_profile.get("platform_ui_same_size", {}).get("accuracy", 0.0) >= 0.8:
+        notes.append("platform_ui_same_size remains comparatively robust, so UI overlay alone is not the primary cause.")
+    if "recompression_light" in collapse_profiles:
+        notes.append("recompression_light collapse indicates compression robustness should be prioritized.")
+    news = drop_metrics.get("news_meme_overlay")
+    if news and float(news.get("valid_iou_drop") or 0.0) > 0.1 and float(news.get("tampered_recall_drop") or 0.0) < 0.15:
+        notes.append("news_meme_overlay preserves classification better than localization, so ignore-mask-aware localization loss should be emphasized.")
+    if "combined_sns_realistic" in too_severe:
+        notes.append("combined_sns_realistic is too severe for epoch 1 and should appear later in curriculum.")
+    return {
+        "main_collapse_cause": main_cause,
+        "profiles_safe_for_training": safe_profiles,
+        "profiles_too_severe_for_early_curriculum": too_severe,
+        "recommended_snsaug_finetuning_mix": recommended_mix,
+        "notes": notes,
+    }
+
+
+def render_small_benchmark_summary(
+    summary: dict[str, Any],
+    per_profile: dict[str, dict[str, Any]],
+    drop_metrics: dict[str, dict[str, Any]],
+    interpretation: dict[str, Any],
+) -> str:
+    lines = [
+        "# Small Benchmark Summary",
+        "",
+        f"- Marker: `{summary['marker']}`",
+        f"- Record count: `{summary['record_count']}`",
+        f"- Comparison count: `{summary['comparison_count']}`",
+        f"- Warning count: `{summary['warning_count']}`",
+        f"- Main collapse cause: `{interpretation['main_collapse_cause']}`",
+        "",
+        "## Per Profile",
+        "",
+        "| Profile | Accuracy | Macro-F1 | Tampered Recall | Valid IoU | Mean p_tampered |",
+        "| --- | ---: | ---: | ---: | ---: | ---: |",
+    ]
+    for profile in summary["profiles"]:
+        metrics = per_profile.get(profile)
+        if not metrics:
+            continue
+        lines.append(
+            f"| {profile} | {float(metrics.get('accuracy') or 0.0):.4f} | {float(metrics.get('macro_f1') or 0.0):.4f} | {float(metrics.get('tampered_recall') or 0.0):.4f} | {float(metrics.get('tampered_valid_mean_iou') or 0.0):.4f} | {float(metrics.get('mean_p_tampered_on_tampered') or 0.0):.4f} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Robustness Drops",
+            "",
+            "| Profile | Accuracy Drop | Tampered Recall Drop | Valid IoU Drop | Mean p_tampered Drop |",
+            "| --- | ---: | ---: | ---: | ---: |",
+        ]
+    )
+    for profile, metrics in drop_metrics.items():
+        lines.append(
+            f"| {profile} | {float(metrics.get('accuracy_drop') or 0.0):.4f} | {float(metrics.get('tampered_recall_drop') or 0.0):.4f} | {float(metrics.get('valid_iou_drop') or 0.0):.4f} | {float(metrics.get('mean_p_tampered_drop_on_tampered') or 0.0):.4f} |"
+        )
+    if interpretation.get("notes"):
+        lines.extend(["", "## Interpretation", ""])
+        for note in interpretation["notes"]:
+            lines.append(f"- {note}")
+    return "\n".join(lines) + "\n"
+
+
 def run_snsaug_v2_fixed_pairs_eval(config: dict[str, Any]) -> dict[str, Any]:
     assert_valid_config(config, require_exists=True)
     output_root = _real(config["output_root"])
@@ -550,6 +678,7 @@ def run_snsaug_v2_fixed_pairs_eval(config: dict[str, Any]) -> dict[str, Any]:
     drop_metrics = robustness_drop_metrics(comparisons, per_profile)
     worst = worst_samples(comparisons)
     fragile = fragile_candidates(comparisons)
+    interpretation = build_small_benchmark_interpretation(per_profile, drop_metrics)
     summary = {
         "marker": MARKER,
         "pair_root": str(_real(config["pair_root"])),
@@ -586,6 +715,10 @@ def run_snsaug_v2_fixed_pairs_eval(config: dict[str, Any]) -> dict[str, Any]:
         "worst_samples_json": str(output_root / "snsaug_v2_worst_samples.json"),
         "fragile_candidates_jsonl": str(output_root / "snsaug_v2_fragile_candidates.jsonl"),
         "visual_gallery_manifest_json": str(output_root / "visual_gallery_manifest.json"),
+        "small_benchmark_summary_md": str(output_root / "small_benchmark_summary.md"),
+        "small_benchmark_metrics_table_csv": str(output_root / "small_benchmark_metrics_table.csv"),
+        "small_benchmark_drop_table_csv": str(output_root / "small_benchmark_drop_table.csv"),
+        "small_benchmark_interpretation_json": str(output_root / "small_benchmark_interpretation.json"),
         "no_training": True,
         "no_finetune": True,
         "no_network": True,
@@ -599,5 +732,50 @@ def run_snsaug_v2_fixed_pairs_eval(config: dict[str, Any]) -> dict[str, Any]:
     _write_json(output_root / "snsaug_v2_worst_samples.json", worst)
     _write_jsonl(output_root / "snsaug_v2_fragile_candidates.jsonl", fragile)
     _write_json(output_root / "visual_gallery_manifest.json", visual_gallery)
+    _write_text(output_root / "small_benchmark_summary.md", render_small_benchmark_summary(summary, per_profile, drop_metrics, interpretation))
+    _write_csv(
+        output_root / "small_benchmark_metrics_table.csv",
+        ["profile", "sample_count", "accuracy", "macro_f1", "real_fpr", "synthetic_recall", "tampered_recall", "localization_activation_recall", "tampered_raw_mean_iou", "tampered_valid_mean_iou", "tampered_valid_mean_dice", "non_tampered_high_mask_rate", "mean_p_tampered_on_tampered", "mean_latency_ms", "fps"],
+        [
+            [
+                profile,
+                metrics.get("sample_count"),
+                metrics.get("accuracy"),
+                metrics.get("macro_f1"),
+                metrics.get("real_fpr"),
+                metrics.get("synthetic_recall"),
+                metrics.get("tampered_recall"),
+                metrics.get("localization_activation_recall"),
+                metrics.get("tampered_raw_mean_iou"),
+                metrics.get("tampered_valid_mean_iou"),
+                metrics.get("tampered_valid_mean_dice"),
+                metrics.get("non_tampered_high_mask_rate"),
+                metrics.get("mean_p_tampered_on_tampered"),
+                metrics.get("mean_latency_ms"),
+                metrics.get("fps"),
+            ]
+            for profile, metrics in per_profile.items()
+        ],
+    )
+    _write_csv(
+        output_root / "small_benchmark_drop_table.csv",
+        ["profile", "accuracy_drop", "macro_f1_drop", "real_fpr_increase", "synthetic_recall_drop", "tampered_recall_drop", "localization_activation_recall_drop", "valid_iou_drop", "raw_iou_drop", "mean_p_tampered_drop_on_tampered"],
+        [
+            [
+                profile,
+                metrics.get("accuracy_drop"),
+                metrics.get("macro_f1_drop"),
+                metrics.get("real_fpr_increase"),
+                metrics.get("synthetic_recall_drop"),
+                metrics.get("tampered_recall_drop"),
+                metrics.get("localization_activation_recall_drop"),
+                metrics.get("valid_iou_drop"),
+                metrics.get("raw_iou_drop"),
+                metrics.get("mean_p_tampered_drop_on_tampered"),
+            ]
+            for profile, metrics in drop_metrics.items()
+        ],
+    )
+    _write_json(output_root / "small_benchmark_interpretation.json", interpretation)
     _write_json(output_root / "artifact_manifest.json", artifact_manifest)
     return summary
