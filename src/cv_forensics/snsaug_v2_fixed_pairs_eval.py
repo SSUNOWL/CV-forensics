@@ -175,6 +175,8 @@ def validate_snsaug_v2_fixed_pairs_eval_config(raw: dict[str, Any], require_exis
         value = raw.get("max_samples")
         if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
             errors.append(_err("max_samples must be a positive integer when present"))
+    if "write_empty_pred_mask" in raw and not isinstance(raw.get("write_empty_pred_mask"), bool):
+        errors.append(_err("write_empty_pred_mask must be boolean when present"))
     return errors
 
 
@@ -317,6 +319,99 @@ def _shape_from_path(Image: Any, path: str) -> tuple[int, int]:
         return int(image.size[0]), int(image.size[1])
 
 
+def _safe_artifact_stem(row: dict[str, Any], index: int) -> str:
+    raw = "__".join(
+        [
+            f"{index:06d}",
+            str(row.get("base_id") or "base"),
+            str(row.get("view") or "view"),
+            str(row.get("profile") or "profile"),
+        ]
+    )
+    return "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in raw)
+
+
+def _mask_for_shape(mask: list[int] | None, shape: tuple[int, int]) -> list[int] | None:
+    if mask is None:
+        return None
+    expected = int(shape[0]) * int(shape[1])
+    if len(mask) != expected:
+        return None
+    return [1 if value else 0 for value in mask]
+
+
+def _write_mask_png(Image: Any, path: Path, mask: list[int], shape: tuple[int, int]) -> str:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    image = Image.new("L", shape)
+    image.putdata([255 if value else 0 for value in mask])
+    image.save(path)
+    return str(path)
+
+
+def _color_overlay(Image: Any, base: Any, mask: list[int], shape: tuple[int, int], color: tuple[int, int, int], alpha: float = 0.45) -> Any:
+    mask_image = Image.new("L", shape)
+    mask_image.putdata([255 if value else 0 for value in mask])
+    if mask_image.size != base.size:
+        resample = getattr(getattr(Image, "Resampling", Image), "NEAREST")
+        mask_image = mask_image.resize(base.size, resample)
+    pixels = []
+    for pixel, active in zip(base.getdata(), mask_image.getdata()):
+        pixels.append(tuple(int(round((1.0 - alpha) * pixel[i] + alpha * color[i])) for i in range(3)) if active else pixel)
+    out = Image.new("RGB", base.size)
+    out.putdata(pixels)
+    return out
+
+
+def _write_overlay_png(Image: Any, path: Path, base: Any, mask: list[int], shape: tuple[int, int], color: tuple[int, int, int]) -> str:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _color_overlay(Image, base, mask, shape, color).save(path)
+    return str(path)
+
+
+def _export_visual_artifacts(
+    *,
+    Image: Any,
+    config: dict[str, Any],
+    row: dict[str, Any],
+    index: int,
+    pred_mask: list[int] | None,
+    gt_mask: list[int] | None,
+    ignore_mask: list[int] | None,
+    localization_activated: bool,
+) -> dict[str, Any]:
+    fields: dict[str, Any] = {
+        "pred_mask_path": None,
+        "pred_red_overlay_path": None,
+        "gt_red_overlay_path": None,
+        "ignore_blue_overlay_path": None,
+        "overlap_overlay_path": None,
+        "pred_mask_available": False,
+    }
+    output_root = _real(config["output_root"])
+    stem = _safe_artifact_stem(row, index)
+    with Image.open(str(row["image_path"])) as image:
+        base = image.convert("RGB")
+    shape = (int(base.size[0]), int(base.size[1]))
+    pred_values = _mask_for_shape(pred_mask, shape) if localization_activated else None
+    if not localization_activated and config.get("write_empty_pred_mask") is True:
+        pred_values = [0] * (shape[0] * shape[1])
+    if pred_values is not None:
+        fields["pred_mask_path"] = _write_mask_png(Image, output_root / "pred_masks" / f"{stem}.png", pred_values, shape)
+        fields["pred_red_overlay_path"] = _write_overlay_png(Image, output_root / "pred_red_overlays" / f"{stem}.png", base, pred_values, shape, (255, 0, 0))
+        fields["pred_mask_available"] = Path(str(fields["pred_mask_path"])).is_file()
+
+    gt_values = _mask_for_shape(gt_mask, shape)
+    ignore_values = _mask_for_shape(ignore_mask, shape)
+    if gt_values is not None:
+        fields["gt_red_overlay_path"] = _write_overlay_png(Image, output_root / "gt_red_overlays" / f"{stem}.png", base, gt_values, shape, (255, 0, 0))
+    if ignore_values is not None:
+        fields["ignore_blue_overlay_path"] = _write_overlay_png(Image, output_root / "ignore_blue_overlays" / f"{stem}.png", base, ignore_values, shape, (0, 96, 255))
+    if gt_values is not None and ignore_values is not None:
+        overlap_values = [1 if gt and ignore else 0 for gt, ignore in zip(gt_values, ignore_values)]
+        fields["overlap_overlay_path"] = _write_overlay_png(Image, output_root / "overlap_overlays" / f"{stem}.png", base, overlap_values, shape, (255, 255, 0))
+    return fields
+
+
 def _iou(pred: list[int], gt: list[int]) -> float | None:
     if len(pred) != len(gt) or not pred:
         return None
@@ -366,6 +461,17 @@ def evaluate_pair_record(bundle: dict[str, Any], config: dict[str, Any], row: di
     metrics = compute_mask_metrics(pred_mask, gt_mask, ignore_mask)
     pred_class = normalize_label(result.get("class"))
     label = normalize_label(row.get("content_label"))
+    localization_activated = bool(result.get("tile_localization_activated"))
+    visual_paths = _export_visual_artifacts(
+        Image=Image,
+        config=config,
+        row=row,
+        index=index,
+        pred_mask=pred_mask,
+        gt_mask=gt_mask,
+        ignore_mask=ignore_mask,
+        localization_activated=localization_activated,
+    )
     return {
         "base_id": str(row["base_id"]),
         "content_label": label,
@@ -381,7 +487,8 @@ def evaluate_pair_record(bundle: dict[str, Any], config: dict[str, Any], row: di
         "p_synthetic": _safe_prob(result.get("class_conf", {}), "synthetic"),
         "p_tampered": _safe_prob(result.get("class_conf", {}), "tampered"),
         "tampered_score": float(result.get("tampered_score", 0.0)),
-        "localization_activated": bool(result.get("tile_localization_activated")),
+        "localization_activated": localization_activated,
+        **visual_paths,
         "final_mask_source": result.get("final_mask_source"),
         "final_mask_area_pct": float(result.get("final_mask_area_pct", 0.0)),
         "raw_iou": metrics["raw_iou"],
@@ -416,7 +523,13 @@ def evaluate_rows(bundle: dict[str, Any], config: dict[str, Any], rows: list[dic
                     "p_synthetic": None,
                     "p_tampered": None,
                     "tampered_score": None,
-                    "localization_activated": None,
+                    "localization_activated": False,
+                    "pred_mask_path": None,
+                    "pred_red_overlay_path": None,
+                    "gt_red_overlay_path": None,
+                    "ignore_blue_overlay_path": None,
+                    "overlap_overlay_path": None,
+                    "pred_mask_available": False,
                     "final_mask_source": None,
                     "final_mask_area_pct": None,
                     "raw_iou": None,
@@ -754,6 +867,11 @@ def run_snsaug_v2_fixed_pairs_eval(config: dict[str, Any]) -> dict[str, Any]:
         "small_benchmark_metrics_table_csv": str(output_root / "small_benchmark_metrics_table.csv"),
         "small_benchmark_drop_table_csv": str(output_root / "small_benchmark_drop_table.csv"),
         "small_benchmark_interpretation_json": str(output_root / "small_benchmark_interpretation.json"),
+        "pred_masks_dir": str(output_root / "pred_masks"),
+        "pred_red_overlays_dir": str(output_root / "pred_red_overlays"),
+        "gt_red_overlays_dir": str(output_root / "gt_red_overlays"),
+        "ignore_blue_overlays_dir": str(output_root / "ignore_blue_overlays"),
+        "overlap_overlays_dir": str(output_root / "overlap_overlays"),
         "no_training": True,
         "no_finetune": True,
         "no_network": True,

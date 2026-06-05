@@ -247,19 +247,31 @@ def test_validator_guardrails() -> None:
     unsafe = dict(cfg)
     unsafe["output_root"] = str(REPO_ROOT / "bad_eval_output")
     unsafe["no_network"] = False
+    unsafe["write_empty_pred_mask"] = "yes"
     errors = validate_snsaug_v2_fixed_pairs_eval_config(unsafe, require_exists=False)
     assert_true(any("output_root must be outside repository" in error for error in errors), "repo output rejected")
     assert_true(any("no_network must be true" in error for error in errors), "network rejected")
+    assert_true(any("write_empty_pred_mask must be boolean" in error for error in errors), "write_empty_pred_mask type rejected")
 
 
 def test_run_eval_output_schema() -> None:
     before = set(os.listdir(REPO_ROOT))
     root = temp_root("cvf_fixed_pairs_run_")
     pair_root, meta_path, bundle_path = _write_pair_fixture(root)
-    summary = run_snsaug_v2_fixed_pairs_eval(safe_config(root, pair_root, meta_path, bundle_path))
+    long_checkpoint = root / "bundle" / "dummy_long256.pt"
+    tile_checkpoint = root / "bundle" / "dummy_tile_v2.pt"
+    long_before = long_checkpoint.read_text(encoding="utf-8")
+    tile_before = tile_checkpoint.read_text(encoding="utf-8")
+    cfg = safe_config(root, pair_root, meta_path, bundle_path)
+    cfg["write_empty_pred_mask"] = True
+    summary = run_snsaug_v2_fixed_pairs_eval(cfg)
     after = set(os.listdir(REPO_ROOT))
     assert_equal(before, after, "no repo writes")
     assert_equal(summary["marker"], MARKER, "summary marker")
+    assert_true(summary["no_training"], "summary no training")
+    assert_true(summary["no_finetune"], "summary no finetune")
+    assert_equal(long_checkpoint.read_text(encoding="utf-8"), long_before, "long checkpoint unchanged")
+    assert_equal(tile_checkpoint.read_text(encoding="utf-8"), tile_before, "tile checkpoint unchanged")
     out = root / "reports" / "fixed_eval"
     for name in (
         "snsaug_v2_eval_records.jsonl",
@@ -273,6 +285,40 @@ def test_run_eval_output_schema() -> None:
         "artifact_manifest.json",
     ):
         assert_true((out / name).is_file(), f"{name} exists")
+    records = [json.loads(line) for line in (out / "snsaug_v2_eval_records.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
+    required_fields = {
+        "pred_mask_path",
+        "pred_red_overlay_path",
+        "gt_red_overlay_path",
+        "ignore_blue_overlay_path",
+        "overlap_overlay_path",
+        "pred_mask_available",
+        "localization_activated",
+    }
+    assert_true(records, "records written")
+    for record in records:
+        assert_true(required_fields.issubset(record), "new visual fields present")
+        assert_true(record["pred_mask_available"], "pred mask available with empty-mask export")
+        assert_true(Path(record["pred_mask_path"]).is_file(), "pred mask file exists")
+        assert_true(Path(record["pred_red_overlay_path"]).is_file(), "pred red overlay exists")
+        assert_true(Path(record["ignore_blue_overlay_path"]).is_file(), "ignore blue overlay exists")
+        with Image.open(record["image_path"]) as image, Image.open(record["pred_red_overlay_path"]) as overlay:
+            assert_equal(overlay.size, image.size, "pred red overlay dimensions")
+    active = next(record for record in records if record["base_id"] == "tampered_1" and record["profile"] == "clean")
+    inactive = next(record for record in records if record["base_id"] == "tampered_1" and record["profile"] == "tiktok_like")
+    assert_true(active["localization_activated"], "tampered clean localization active")
+    assert_true(not inactive["localization_activated"], "tampered sns localization inactive")
+    with Image.open(active["pred_mask_path"]) as mask:
+        assert_true(mask.convert("L").getbbox() is not None, "active pred mask is non-empty")
+    with Image.open(inactive["pred_mask_path"]) as mask:
+        assert_equal(mask.convert("L").getbbox(), None, "inactive pred mask is empty")
+    assert_true(Path(active["gt_red_overlay_path"]).is_file(), "gt red overlay exists")
+    assert_true(Path(active["overlap_overlay_path"]).is_file(), "overlap overlay exists")
+    with Image.open(active["image_path"]) as image, Image.open(active["gt_red_overlay_path"]) as overlay:
+        assert_equal(overlay.size, image.size, "gt red overlay dimensions")
+    artifact = json.loads((out / "artifact_manifest.json").read_text(encoding="utf-8"))
+    for key in ("pred_masks_dir", "pred_red_overlays_dir", "gt_red_overlays_dir", "ignore_blue_overlays_dir", "overlap_overlays_dir"):
+        assert_true(Path(artifact[key]).is_dir(), f"{key} exists")
 
 
 def main() -> int:

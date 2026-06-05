@@ -2,6 +2,8 @@
 
 `SNSAUG_V2_FIXED_PAIRS_EVAL_OK`
 
+`SNSAUG_V2_PRED_REDMASK_EXPORT_OK`
+
 This workflow is evaluation only. It does not train, fine-tune, run `0054`, modify checkpoints, download assets, or use network resources.
 
 ## Input Pair Dataset
@@ -39,6 +41,30 @@ For tampered samples:
 - `valid_iou` and `valid_dice` exclude SNS overlay regions using `ignore_mask`
 
 `valid_iou` is the primary localization robustness metric because benign overlay pixels should not count as tamper-localization errors.
+
+## Visual Mask Export
+
+For report-quality visual comparison, the evaluator can export per-record mask visualizations under the configured external `output_root`:
+
+- `pred_masks/`
+- `pred_red_overlays/`
+- `gt_red_overlays/`
+- `ignore_blue_overlays/`
+- `overlap_overlays/`
+
+`snsaug_v2_eval_records.jsonl` includes these fields:
+
+- `pred_mask_path`
+- `pred_red_overlay_path`
+- `gt_red_overlay_path`
+- `ignore_blue_overlay_path`
+- `overlap_overlay_path`
+- `pred_mask_available`
+- `localization_activated`
+
+When localization is activated, the evaluator writes the predicted binary mask and a red overlay. When `write_empty_pred_mask` is true, records without localization activation receive deterministic all-zero predicted masks and matching red overlays. GT red overlays, ignore-mask blue overlays, and tamper-ignore overlap overlays are written when the corresponding masks are available.
+
+The valid-IoU computation is unchanged: prediction and GT masks are still evaluated after excluding `ignore_mask` pixels from the valid region.
 
 ## Metrics
 
