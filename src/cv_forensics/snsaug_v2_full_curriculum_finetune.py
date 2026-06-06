@@ -507,6 +507,41 @@ def _softmax(row: list[float]) -> list[float]:
     return [value / total for value in exps]
 
 
+def tampered_score_consistency_diagnostics(clean_logits: Any, sns_logits: Any, labels: Any, *, floor: float = 0.50) -> dict[str, Any]:
+    label_values = labels if isinstance(labels, (list, tuple)) else [labels]
+    clean_rows = clean_logits if isinstance(clean_logits, (list, tuple)) and clean_logits and isinstance(clean_logits[0], (list, tuple)) else [clean_logits]
+    sns_rows = sns_logits if isinstance(sns_logits, (list, tuple)) and sns_logits and isinstance(sns_logits[0], (list, tuple)) else [sns_logits]
+    pair_count = 0
+    clean_sum = 0.0
+    sns_sum = 0.0
+    loss_sum = 0.0
+    for clean_row, sns_row, label in zip(clean_rows, sns_rows, label_values):
+        if str(label).lower() != "tampered" and label != CLASS_TO_INDEX["tampered"]:
+            continue
+        clean_prob = _softmax([float(value) for value in clean_row])[CLASS_TO_INDEX["tampered"]]
+        sns_prob = _softmax([float(value) for value in sns_row])[CLASS_TO_INDEX["tampered"]]
+        target = max(float(floor), clean_prob)
+        pair_count += 1
+        clean_sum += clean_prob
+        sns_sum += sns_prob
+        loss_sum += max(0.0, target - sns_prob) ** 2
+    if pair_count == 0:
+        return {
+            "mean_p_tampered_clean": None,
+            "mean_p_tampered_sns": None,
+            "tampered_score_consistency_loss": 0.0,
+            "tampered_pair_count": 0,
+            "tampered_score_consistency_skip_reason": "no_tampered_pairs",
+        }
+    return {
+        "mean_p_tampered_clean": clean_sum / pair_count,
+        "mean_p_tampered_sns": sns_sum / pair_count,
+        "tampered_score_consistency_loss": loss_sum / pair_count,
+        "tampered_pair_count": pair_count,
+        "tampered_score_consistency_skip_reason": None,
+    }
+
+
 def _sigmoid(value: float) -> float:
     return 1.0 / (1.0 + math.exp(-value))
 
@@ -537,6 +572,22 @@ def _load_train_rows(config: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
+def _group_rows_by_label(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    grouped = {label: [] for label in CLASS_TO_INDEX}
+    for row in rows:
+        grouped[_label(row)].append(row)
+    return grouped
+
+
+def _select_curriculum_row(grouped_rows: dict[str, list[dict[str, Any]]], step_index: int) -> dict[str, Any]:
+    label_cycle = ("tampered", "real", "synthetic")
+    label = label_cycle[step_index % len(label_cycle)]
+    rows = grouped_rows.get(label) or []
+    if not rows:
+        raise SNSAugV2FullCurriculumFinetuneError(f"training manifest has no {label} rows")
+    return rows[(step_index // len(label_cycle)) % len(rows)]
+
+
 def _subset_count(path: Any, default: int = 0) -> int:
     if not path:
         return default
@@ -564,6 +615,7 @@ def _write_checkpoint(path: Path, payload: dict[str, Any]) -> str:
 
 def _run_actual_full_curriculum(config: dict[str, Any], output_root: Path, checkpoint_root: Path, plan: dict[str, Any]) -> dict[str, Any]:
     rows = _load_train_rows(config)
+    grouped_rows = _group_rows_by_label(rows)
     base_bundle = _load_json_file(config["base_model_bundle_path"])
     phase_steps = _phase_steps(config)
     class_bias = [0.0, 0.0, 0.0]
@@ -578,14 +630,20 @@ def _run_actual_full_curriculum(config: dict[str, Any], output_root: Path, check
     for phase_info in PHASES:
         phase = int(phase_info["phase"])
         phase_loss_sums: dict[str, float] = {}
+        tampered_pair_count = 0
+        p_tampered_clean_sum = 0.0
+        p_tampered_sns_sum = 0.0
+        tampered_score_consistency_sum = 0.0
         profile_groups = _phase_profile_groups(config, phase)
         steps = phase_steps[phase]
         for local_step in range(1, steps + 1):
             global_step += 1
-            row = rows[(global_step - 1) % len(rows)]
+            row = _select_curriculum_row(grouped_rows, local_step - 1)
             label = _label(row)
             label_index = CLASS_TO_INDEX[label]
             profile = profile_groups[(local_step - 1) % len(profile_groups)]
+            if label == "tampered" and profile == "clean" and len(profile_groups) > 1:
+                profile = profile_groups[1]
             clean_logits = [class_bias[index] + (1.15 if index == label_index else -0.15) for index in range(3)]
             sns_logits = list(clean_logits)
             if label == "tampered" and profile != "clean":
@@ -593,6 +651,12 @@ def _run_actual_full_curriculum(config: dict[str, Any], output_root: Path, check
             if label != "tampered" and profile not in {"clean", "postprocess_light"}:
                 sns_logits[CLASS_TO_INDEX["tampered"]] += 0.12
             class_logits = sns_logits
+            score_diag = tampered_score_consistency_diagnostics(
+                [clean_logits],
+                [sns_logits],
+                [label],
+                floor=float(config.get("tampered_score_floor", 0.5)),
+            )
             pred_value = _sigmoid(mask_bias + (0.75 if label == "tampered" else -0.75))
             target_value = 1.0 if label == "tampered" else 0.0
             ignore_value = 0.0 if profile == "clean" else min(0.15 + 0.05 * phase, 0.45)
@@ -619,6 +683,12 @@ def _run_actual_full_curriculum(config: dict[str, Any], output_root: Path, check
             )
             for key, value in losses.items():
                 phase_loss_sums[key] = phase_loss_sums.get(key, 0.0) + value
+            tampered_pair_count_step = 1 if label == "tampered" else 0
+            if tampered_pair_count_step:
+                tampered_pair_count += 1
+                p_tampered_clean_sum += float(score_diag["mean_p_tampered_clean"])
+                p_tampered_sns_sum += float(score_diag["mean_p_tampered_sns"])
+                tampered_score_consistency_sum += float(score_diag["tampered_score_consistency_loss"])
             probs = _softmax(class_logits)
             for index, prob in enumerate(probs):
                 class_bias[index] += lr * ((1.0 if index == label_index else 0.0) - prob)
@@ -638,16 +708,36 @@ def _run_actual_full_curriculum(config: dict[str, Any], output_root: Path, check
                     "base_id": row.get("base_id"),
                     "content_label": label,
                     "profile_group": profile,
+                    "mean_p_tampered_clean": score_diag["mean_p_tampered_clean"],
+                    "mean_p_tampered_sns": score_diag["mean_p_tampered_sns"],
+                    "tampered_pair_count": score_diag["tampered_pair_count"],
+                    "tampered_score_consistency_loss": score_diag["tampered_score_consistency_loss"],
+                    "tampered_score_consistency_skip_reason": score_diag["tampered_score_consistency_skip_reason"],
                     "losses": losses,
                 }
             )
         mean_losses = {key: value / steps for key, value in phase_loss_sums.items()}
+        if tampered_pair_count:
+            mean_p_tampered_clean = p_tampered_clean_sum / tampered_pair_count
+            mean_p_tampered_sns = p_tampered_sns_sum / tampered_pair_count
+            mean_tampered_score_consistency = tampered_score_consistency_sum / tampered_pair_count
+            skip_reason = None
+        else:
+            mean_p_tampered_clean = None
+            mean_p_tampered_sns = None
+            mean_tampered_score_consistency = 0.0
+            skip_reason = "no_tampered_pairs_in_phase"
         metrics = {
             "phase": phase,
             "phase_name": phase_info["name"],
             "steps": steps,
             "mean_losses": mean_losses,
             "losses_finite": all(math.isfinite(value) for value in mean_losses.values()),
+            "mean_p_tampered_clean": mean_p_tampered_clean,
+            "mean_p_tampered_sns": mean_p_tampered_sns,
+            "tampered_score_consistency_loss": mean_tampered_score_consistency,
+            "tampered_pair_count": tampered_pair_count,
+            "tampered_score_consistency_skip_reason": skip_reason,
             "snsaug_tampered_recall": min(0.40 + 0.05 * phase + max(0.0, class_bias[CLASS_TO_INDEX["tampered"]]) * 0.02, 0.99),
             "snsaug_valid_iou": min(0.20 + 0.04 * phase + max(0.0, mask_bias) * 0.03, 0.99),
             "clean_macro_f1": max(0.0, min(0.82 + 0.01 * phase, 0.99)),

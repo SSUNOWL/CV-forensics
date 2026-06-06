@@ -34,6 +34,8 @@ L_total =
 
 `L_tamper_mask_valid` uses `valid_region = 1 - ignore_mask`, so SNS nuisance pixels are excluded from tamper localization loss.
 
+`L_tampered_score_consistency` compares clean/SNS paired tampered logits for the same curriculum sample. Training logs and phase metrics include `mean_p_tampered_clean`, `mean_p_tampered_sns`, `tampered_score_consistency_loss`, and `tampered_pair_count`. The loss should be positive when SNS lowers `p_tampered` below the clean score or configured floor; it should be zero only when no tampered pairs are present, in which case `tampered_score_consistency_skip_reason` is recorded.
+
 Best checkpoint selection uses SNSAug tampered recall plus valid IoU as the primary score, clean macro-F1 as the secondary tie-break, and a configured real-FPR limit as the guardrail.
 
 ## Required Outputs

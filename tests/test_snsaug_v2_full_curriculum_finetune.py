@@ -24,8 +24,10 @@ from cv_forensics.snsaug_v2_full_curriculum_finetune import (  # noqa: E402
     checkpoint_score,
     run_snsaug_v2_full_curriculum_finetune,
     select_best_checkpoint,
+    tampered_score_consistency_diagnostics,
     validate_snsaug_v2_full_curriculum_finetune_config,
 )
+from cv_forensics.snsaug_v2_losses import tampered_score_consistency_loss  # noqa: E402
 
 
 def assert_true(value: bool, message: str) -> None:
@@ -237,6 +239,25 @@ def test_best_checkpoint_policy_and_real_fpr_guardrail() -> None:
     assert_true(checkpoint_score(candidates[0]["metrics"], 0.05)[0] is False, "real fpr guardrail rejects")
 
 
+def test_tampered_score_consistency_detects_sns_score_collapse() -> None:
+    clean_logits = [[0.0, 0.0, 3.0]]
+    sns_logits = [[3.0, 0.0, 0.0]]
+    loss = tampered_score_consistency_loss(clean_logits, sns_logits, ["tampered"], floor=0.50)
+    diag = tampered_score_consistency_diagnostics(clean_logits, sns_logits, ["tampered"], floor=0.50)
+    assert_true(float(loss) > 0.0, "collapsed SNS tampered score has nonzero loss")
+    assert_true(float(diag["tampered_score_consistency_loss"]) > 0.0, "diagnostic loss nonzero")
+    assert_true(diag["tampered_pair_count"] == 1, "tampered pair counted")
+    assert_true(float(diag["mean_p_tampered_clean"]) > float(diag["mean_p_tampered_sns"]), "clean score exceeds SNS score")
+    assert_true(diag["tampered_score_consistency_skip_reason"] is None, "no skip reason for tampered pair")
+
+
+def test_tampered_score_consistency_skip_reason_when_no_tampered_pairs() -> None:
+    diag = tampered_score_consistency_diagnostics([[3.0, 0.0, 0.0]], [[2.0, 0.0, 1.0]], ["real"], floor=0.50)
+    assert_equal(diag["tampered_score_consistency_loss"], 0.0, "no tampered pairs have zero loss")
+    assert_equal(diag["tampered_pair_count"], 0, "no tampered pairs counted")
+    assert_equal(diag["tampered_score_consistency_skip_reason"], "no_tampered_pairs", "skip reason logged")
+
+
 def test_dry_run_starts_no_training_and_lists_outputs() -> None:
     before = set(os.listdir(REPO_ROOT))
     root = temp_root("cvf_0060b_dryrun_")
@@ -290,6 +311,10 @@ def test_actual_tiny_training_writes_required_artifacts_and_checkpoints_outside_
     for phase in phase_metrics["phases"]:
         assert_true(phase["losses_finite"] is True, "phase losses finite")
         assert_true(float(phase["mean_losses"]["total_loss"]) >= 0.0, "total loss finite")
+        assert_true(phase["tampered_pair_count"] > 0, "tampered pairs included")
+        assert_true(phase["tampered_score_consistency_skip_reason"] is None, "phase consistency not skipped")
+        assert_true(float(phase["mean_p_tampered_clean"]) > float(phase["mean_p_tampered_sns"]), "SNS tampered score lower than clean")
+        assert_true(float(phase["tampered_score_consistency_loss"]) > 0.0, "phase consistency loss nonzero")
     clean_eval = json.loads(Path(summary["output_paths"]["clean_validation_metrics"]).read_text(encoding="utf-8"))
     sns_eval = json.loads(Path(summary["output_paths"]["snsaug_0058c_metrics"]).read_text(encoding="utf-8"))
     assert_true(clean_eval["eval_subset_only"] is True, "clean eval marked subset")
@@ -314,6 +339,8 @@ def main() -> int:
         test_output_checkpoint_roots_and_required_policy_rejected,
         test_medium_step_guardrail_validation_only,
         test_best_checkpoint_policy_and_real_fpr_guardrail,
+        test_tampered_score_consistency_detects_sns_score_collapse,
+        test_tampered_score_consistency_skip_reason_when_no_tampered_pairs,
         test_dry_run_starts_no_training_and_lists_outputs,
         test_actual_tiny_training_writes_required_artifacts_and_checkpoints_outside_repo,
         test_plan_schema_contains_phases_and_metrics,
