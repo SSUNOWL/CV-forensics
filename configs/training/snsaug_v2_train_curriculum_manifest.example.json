@@ -1,0 +1,130 @@
+{
+  "schema_version": "1.0",
+  "config_kind": "approved_snsaug_v2_train_curriculum_manifest",
+  "execution_mode": "approved_local_snsaug_v2_train_curriculum_manifest",
+  "train_manifest_path": "/home/rlatjswo/cvf_local_store/pre_sns_manifests_0035_clean/pre_sns_large_manifest_train_clean.local.json",
+  "approved_input_roots": [
+    "/home/rlatjswo/cvf_local_store/pre_sns_manifests_0035_clean"
+  ],
+  "approved_output_roots": [
+    "/home/rlatjswo/cvf_runs",
+    "/home/rlatjswo/.codex/memories"
+  ],
+  "output_root": "/home/rlatjswo/cvf_runs/snsaug_v2_0059_train_curriculum_manifest_YYYYMMDD_HHMMSS",
+  "split_policy": "train_only",
+  "profile_groups": {
+    "clean": [],
+    "geometry_light": [
+      "canvas_9x16_only",
+      "resize_crop_pad",
+      "zoom_crop"
+    ],
+    "postprocess_light": [
+      "recompression_light",
+      "resize_jpeg"
+    ],
+    "screenshot_light": [
+      "screenshot_recapture_light"
+    ],
+    "overlay_light": [
+      "platform_ui_same_size",
+      "news_meme_overlay"
+    ],
+    "platform_layout": [
+      "tiktok_like",
+      "instagram_story_like",
+      "youtube_shorts_like"
+    ],
+    "combined": [
+      "combined_sns_realistic"
+    ]
+  },
+  "curriculum_schedule": {
+    "phase_1_activation_recovery_safe_geometry": {
+      "clean": 0.45,
+      "geometry_light": 0.25,
+      "postprocess_light": 0.15,
+      "overlay_light": 0.1,
+      "screenshot_light": 0.05,
+      "platform_layout": 0.0,
+      "combined": 0.0
+    },
+    "phase_2_geometry_light_platform_adaptation": {
+      "clean": 0.35,
+      "geometry_light": 0.25,
+      "postprocess_light": 0.15,
+      "screenshot_light": 0.1,
+      "overlay_light": 0.05,
+      "platform_layout": 0.1,
+      "combined": 0.0
+    },
+    "phase_3_platform_layout_combined_sns_adaptation": {
+      "clean": 0.25,
+      "geometry_light": 0.25,
+      "postprocess_light": 0.15,
+      "screenshot_light": 0.1,
+      "overlay_light": 0.05,
+      "platform_layout": 0.15,
+      "combined": 0.05
+    }
+  },
+  "severity_schedule": {
+    "clean": {
+      "severity": "none",
+      "profile_probability": 1.0,
+      "notes": "No augmentation."
+    },
+    "geometry_light": {
+      "severity": "light",
+      "profile_probability": {
+        "canvas_9x16_only": 0.4,
+        "resize_crop_pad": 0.45,
+        "zoom_crop": 0.15
+      },
+      "notes": "Low-probability zoom_crop and light geometry/canvas adaptation."
+    },
+    "postprocess_light": {
+      "severity": "light",
+      "profile_probability": {
+        "recompression_light": 0.6,
+        "resize_jpeg": 0.4
+      },
+      "notes": "Light recompression and resize_jpeg early in the curriculum."
+    },
+    "screenshot_light": {
+      "severity": "light",
+      "profile_probability": {
+        "screenshot_recapture_light": 1.0
+      },
+      "notes": "Light screenshot recapture simulation."
+    },
+    "overlay_light": {
+      "severity": "light",
+      "profile_probability": {
+        "platform_ui_same_size": 0.5,
+        "news_meme_overlay": 0.5
+      },
+      "notes": "Light nuisance overlays with ignore_mask excluded from tamper loss."
+    },
+    "platform_layout": {
+      "severity": "medium",
+      "profile_probability": {
+        "tiktok_like": 0.34,
+        "instagram_story_like": 0.33,
+        "youtube_shorts_like": 0.33
+      },
+      "notes": "Hard platform-layout profiles introduced after activation recovery."
+    },
+    "combined": {
+      "severity": "medium",
+      "profile_probability": {
+        "combined_sns_realistic": 1.0
+      },
+      "notes": "Combined realistic SNS shift for late curriculum only."
+    }
+  },
+  "no_training": true,
+  "no_finetune": true,
+  "no_network": true,
+  "no_download": true
+}
