@@ -93,9 +93,12 @@ def safe_config(root: Path) -> dict[str, object]:
         "output_root": str(root / "runs" / "smoke"),
         "checkpoint_root": str(root / "ckpts" / "smoke"),
         "max_steps": 5,
+        "smoke_max_steps_limit": 300,
         "epochs": 1,
         "batch_size": 2,
         "samples_per_class": 2,
+        "smoke_only": True,
+        "no_full_training": True,
         "no_network": True,
         "no_download": True,
     }
@@ -120,6 +123,24 @@ def test_config_validator_rejects_val_rows_and_pair_roots_as_training() -> None:
     eval_train["training_manifest_path"] = str(Path(eval_train["approved_train_manifest_roots"][0]) / "fixed_pairs_manifest.jsonl")
     errors = validate_snsaug_v2_finetune_smoke_config(eval_train, require_exists=False)
     assert_true(any("evaluation roots" in error for error in errors), "pair root training input rejected")
+    eval_row = safe_config(temp_root("cvf_0060a_evalrow_"))
+    eval_root = Path(eval_row["approved_evaluation_roots"][0]) / "bench"
+    eval_root.mkdir(parents=True, exist_ok=True)
+    eval_row["evaluation_pair_root"] = str(eval_root)
+    with open(str(eval_row["training_manifest_path"]), "a", encoding="utf-8") as handle:
+        handle.write(
+            json.dumps(
+                {
+                    "base_id": "eval_image_bad",
+                    "split": "train",
+                    "image_path": str(eval_root / "image.png"),
+                    "content_label": "real",
+                }
+            )
+            + "\n"
+        )
+    errors = validate_snsaug_v2_finetune_smoke_config(eval_row, require_exists=True)
+    assert_true(any("evaluation_pair_root" in error for error in errors), "eval pair image rejected")
 
 
 def test_config_validator_rejects_repo_roots_and_smoke_limit_violations() -> None:
@@ -131,8 +152,14 @@ def test_config_validator_rejects_repo_roots_and_smoke_limit_violations() -> Non
     cfg["checkpoint_root"] = str(REPO_ROOT / "ckpt")
     assert_true(validate_snsaug_v2_finetune_smoke_config(cfg, require_exists=False), "repo checkpoint rejected")
     cfg = safe_config(root)
-    cfg["max_steps"] = 501
+    cfg["max_steps"] = 301
     assert_true(validate_snsaug_v2_finetune_smoke_config(cfg, require_exists=False), "max steps rejected")
+    cfg = safe_config(root)
+    cfg["smoke_only"] = False
+    assert_true(validate_snsaug_v2_finetune_smoke_config(cfg, require_exists=False), "smoke_only rejected")
+    cfg = safe_config(root)
+    cfg["no_full_training"] = False
+    assert_true(validate_snsaug_v2_finetune_smoke_config(cfg, require_exists=False), "no_full_training rejected")
     cfg = safe_config(root)
     cfg["epochs"] = 2
     assert_true(validate_snsaug_v2_finetune_smoke_config(cfg, require_exists=False), "epochs rejected")
@@ -182,8 +209,8 @@ def test_runner_real_guarded_path_writes_required_artifacts_outside_repo() -> No
     root = temp_root("cvf_0060a_realpath_")
     cfg = safe_config(root)
     summary = run_snsaug_v2_finetune_smoke(cfg, dry_run=False)
-    assert_true(summary["training_started"] is False, "unit path does not optimize")
-    assert_true(summary["checkpoint_written"] is True, "checkpoint routing artifact written")
+    assert_true(summary["training_started"] is True, "actual smoke training starts")
+    assert_true(summary["checkpoint_written"] is True, "checkpoint written")
     expected = {
         "smoke_train_log",
         "smoke_train_summary",
@@ -199,6 +226,16 @@ def test_runner_real_guarded_path_writes_required_artifacts_outside_repo() -> No
         path_obj = Path(path)
         assert_true(path_obj.exists(), f"{path} exists")
         assert_true(not str(path_obj).startswith(str(REPO_ROOT)), "artifact outside repo")
+    artifact = json.loads(Path(summary["output_paths"]["artifact_manifest"]).read_text(encoding="utf-8"))
+    assert_true(artifact["training_started"] is True, "artifact records training_started")
+    assert_true(artifact["checkpoint_written"] is True, "artifact records checkpoint_written")
+    loss_breakdown = json.loads(Path(summary["output_paths"]["loss_breakdown"]).read_text(encoding="utf-8"))
+    assert_true(loss_breakdown["finite"] is True, "losses finite")
+    assert_true(float(loss_breakdown["mean_losses"]["total_loss"]) >= 0.0, "mean total loss finite")
+    clean_eval = json.loads(Path(summary["output_paths"]["smoke_eval_clean_summary"]).read_text(encoding="utf-8"))
+    sns_eval = json.loads(Path(summary["output_paths"]["smoke_eval_0058c_summary"]).read_text(encoding="utf-8"))
+    assert_true(clean_eval["eval_subset_only"] is True, "clean eval placeholder marked subset")
+    assert_true(sns_eval["eval_subset_only"] is True, "sns eval placeholder marked subset")
 
 
 def main() -> int:
