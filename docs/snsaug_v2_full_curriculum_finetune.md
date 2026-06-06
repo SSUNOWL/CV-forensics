@@ -62,7 +62,9 @@ Running without `--dry-run` enters the guarded actual training branch after vali
 - `snsaug_aware_multihead_forensics_v1_best.pt`
 - `snsaug_aware_multihead_forensics_v1_last.pt`
 
-Small local sanity runs can use `max_steps_per_phase`, `phase_1_max_steps`, `phase_2_max_steps`, and `phase_3_max_steps` with values up to 30. Larger real training should be launched deliberately outside unit validation.
+Small local sanity runs can use `max_steps_per_phase`, `phase_1_max_steps`, `phase_2_max_steps`, and `phase_3_max_steps` with tiny values such as 30 or less. Approved medium runs may raise those phase steps up to `max_allowed_steps_per_phase`, which defaults to 500.
+
+`max_allowed_steps_per_phase` values above 500 require `allow_long_run_after_medium_pass=true` and are capped at 2000. Values such as 5000 are rejected. Unit validation should keep actual runner execution tiny and use validator-only checks for medium or long-run limits.
 
 Subset evaluation summaries must be marked with `eval_subset_only=true`, `full_evaluation_ran=false`, and `sample_count`. Do not treat these as full benchmark metrics.
 

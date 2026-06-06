@@ -100,6 +100,7 @@ def safe_config(root: Path) -> dict[str, object]:
         "output_root": str(root / "runs" / "full"),
         "checkpoint_root": str(root / "ckpts" / "full"),
         "real_fpr_limit": 0.05,
+        "max_allowed_steps_per_phase": 500,
         "max_steps_per_phase": 3,
         "phase_1_max_steps": 2,
         "phase_2_max_steps": 2,
@@ -164,10 +165,65 @@ def test_output_checkpoint_roots_and_required_policy_rejected() -> None:
     assert_true(validate_snsaug_v2_full_curriculum_finetune_config(cfg, require_exists=False), "best policy required")
     cfg = safe_config(root)
     cfg["max_steps_per_phase"] = 31
+    cfg["max_allowed_steps_per_phase"] = 30
     assert_true(validate_snsaug_v2_full_curriculum_finetune_config(cfg, require_exists=False), "max steps per phase rejected")
     cfg = safe_config(root)
     cfg["phase_2_max_steps"] = 0
     assert_true(validate_snsaug_v2_full_curriculum_finetune_config(cfg, require_exists=False), "phase steps rejected")
+
+
+def test_medium_step_guardrail_validation_only() -> None:
+    root = temp_root("cvf_0060b_steps_")
+    cfg = safe_config(root)
+    cfg["max_steps_per_phase"] = 30
+    cfg["phase_1_max_steps"] = 30
+    cfg["phase_2_max_steps"] = 30
+    cfg["phase_3_max_steps"] = 30
+    assert_equal(validate_snsaug_v2_full_curriculum_finetune_config(cfg, require_exists=False), [], "30 steps pass")
+
+    cfg = safe_config(root)
+    cfg["max_allowed_steps_per_phase"] = 500
+    cfg["max_steps_per_phase"] = 150
+    cfg["phase_1_max_steps"] = 150
+    cfg["phase_2_max_steps"] = 150
+    cfg["phase_3_max_steps"] = 150
+    assert_equal(validate_snsaug_v2_full_curriculum_finetune_config(cfg, require_exists=False), [], "150 steps pass")
+
+    cfg = safe_config(root)
+    cfg["max_allowed_steps_per_phase"] = 500
+    cfg["max_steps_per_phase"] = 500
+    cfg["phase_1_max_steps"] = 500
+    cfg["phase_2_max_steps"] = 500
+    cfg["phase_3_max_steps"] = 500
+    assert_equal(validate_snsaug_v2_full_curriculum_finetune_config(cfg, require_exists=False), [], "500 steps pass")
+
+    cfg = safe_config(root)
+    cfg["max_steps_per_phase"] = 501
+    errors = validate_snsaug_v2_full_curriculum_finetune_config(cfg, require_exists=False)
+    assert_true(any("max_steps_per_phase" in error for error in errors), "501 fails by default")
+
+    cfg = safe_config(root)
+    cfg["max_allowed_steps_per_phase"] = 501
+    cfg["allow_long_run_after_medium_pass"] = True
+    cfg["max_steps_per_phase"] = 501
+    cfg["phase_1_max_steps"] = 501
+    cfg["phase_2_max_steps"] = 501
+    cfg["phase_3_max_steps"] = 501
+    assert_equal(validate_snsaug_v2_full_curriculum_finetune_config(cfg, require_exists=False), [], "501 passes with explicit long-run override")
+
+    cfg = safe_config(root)
+    cfg["max_allowed_steps_per_phase"] = 2000
+    cfg["allow_long_run_after_medium_pass"] = True
+    cfg["max_steps_per_phase"] = 5000
+    errors = validate_snsaug_v2_full_curriculum_finetune_config(cfg, require_exists=False)
+    assert_true(any("max_steps_per_phase" in error for error in errors), "5000 always fails")
+
+    cfg = safe_config(root)
+    cfg["max_allowed_steps_per_phase"] = 5000
+    cfg["allow_long_run_after_medium_pass"] = True
+    cfg["max_steps_per_phase"] = 5000
+    errors = validate_snsaug_v2_full_curriculum_finetune_config(cfg, require_exists=False)
+    assert_true(any("max_allowed_steps_per_phase" in error for error in errors), "limit above 2000 rejected")
 
 
 def test_best_checkpoint_policy_and_real_fpr_guardrail() -> None:
@@ -256,6 +312,7 @@ def main() -> int:
         test_approval_and_train_from_scratch_rejected,
         test_train_only_manifest_and_eval_training_input_rejected,
         test_output_checkpoint_roots_and_required_policy_rejected,
+        test_medium_step_guardrail_validation_only,
         test_best_checkpoint_policy_and_real_fpr_guardrail,
         test_dry_run_starts_no_training_and_lists_outputs,
         test_actual_tiny_training_writes_required_artifacts_and_checkpoints_outside_repo,

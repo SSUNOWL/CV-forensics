@@ -195,6 +195,34 @@ def _validate_numeric(value: Any, field: str, *, minimum: float = 0.0, maximum: 
     return []
 
 
+def _step_guardrail_limit(raw: dict[str, Any]) -> tuple[int, list[str]]:
+    errors: list[str] = []
+    limit = raw.get("max_allowed_steps_per_phase", 500)
+    if isinstance(limit, bool) or not isinstance(limit, int):
+        return 500, ["max_allowed_steps_per_phase must be an integer"]
+    if limit < 1:
+        errors.append("max_allowed_steps_per_phase must be >= 1")
+    if limit > 500:
+        if raw.get("allow_long_run_after_medium_pass") is not True:
+            errors.append("max_allowed_steps_per_phase > 500 requires allow_long_run_after_medium_pass=true")
+        if limit > 2000:
+            errors.append("max_allowed_steps_per_phase must be <= 2000")
+    return limit, errors
+
+
+def _validate_phase_step_fields(raw: dict[str, Any]) -> list[str]:
+    limit, errors = _step_guardrail_limit(raw)
+    default = raw.get("max_steps_per_phase", 30)
+    if isinstance(default, bool) or not isinstance(default, int) or not (1 <= default <= limit):
+        errors.append(f"max_steps_per_phase must be an integer in 1..{limit}")
+    for field in ("phase_1_max_steps", "phase_2_max_steps", "phase_3_max_steps"):
+        if field in raw:
+            value = raw.get(field)
+            if isinstance(value, bool) or not isinstance(value, int) or not (1 <= value <= limit):
+                errors.append(f"{field} must be an integer in 1..{limit}")
+    return errors
+
+
 def validate_snsaug_v2_full_curriculum_finetune_config(raw: dict[str, Any], require_exists: bool = False) -> list[str]:
     errors: list[str] = []
     required = (
@@ -244,14 +272,7 @@ def validate_snsaug_v2_full_curriculum_finetune_config(raw: dict[str, Any], requ
     if raw.get("best_checkpoint_policy") != BEST_POLICY:
         errors.append("best_checkpoint_policy must match the required SNSAug primary, clean secondary, real-FPR guardrail policy")
     errors.extend(_validate_numeric(raw.get("real_fpr_limit"), "real_fpr_limit", minimum=0.0, maximum=1.0))
-    max_steps_per_phase = raw.get("max_steps_per_phase", 30)
-    if isinstance(max_steps_per_phase, bool) or not isinstance(max_steps_per_phase, int) or not (1 <= max_steps_per_phase <= 30):
-        errors.append("max_steps_per_phase must be an integer in 1..30")
-    for field in ("phase_1_max_steps", "phase_2_max_steps", "phase_3_max_steps"):
-        if field in raw:
-            value = raw.get(field)
-            if isinstance(value, bool) or not isinstance(value, int) or not (1 <= value <= 30):
-                errors.append(f"{field} must be an integer in 1..30")
+    errors.extend(_validate_phase_step_fields(raw))
 
     train_roots = _as_roots(raw.get("approved_train_manifest_roots"))
     model_roots = _as_roots(raw.get("approved_model_roots"))
@@ -430,6 +451,9 @@ def _label(row: dict[str, Any]) -> str:
 
 
 def _phase_steps(config: dict[str, Any]) -> dict[int, int]:
+    limit, limit_errors = _step_guardrail_limit(config)
+    if limit_errors:
+        raise SNSAugV2FullCurriculumFinetuneError("\n".join(limit_errors))
     default = int(config.get("max_steps_per_phase", 30))
     steps = {
         1: int(config.get("phase_1_max_steps", default)),
@@ -437,8 +461,8 @@ def _phase_steps(config: dict[str, Any]) -> dict[int, int]:
         3: int(config.get("phase_3_max_steps", default)),
     }
     for phase, value in steps.items():
-        if not (1 <= value <= 30):
-            raise SNSAugV2FullCurriculumFinetuneError(f"phase {phase} max steps must be in 1..30")
+        if not (1 <= value <= limit):
+            raise SNSAugV2FullCurriculumFinetuneError(f"phase {phase} max steps must be in 1..{limit}")
     return steps
 
 
