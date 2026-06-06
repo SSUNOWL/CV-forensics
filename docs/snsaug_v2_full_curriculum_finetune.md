@@ -52,3 +52,27 @@ Approved real runs must write outputs only under external roots:
 - artifact manifest
 
 The CLI also supports a dry run that validates guardrails and prints the planned training/evaluation outputs without training or writing checkpoints.
+
+## Dry-Run And Actual Run
+
+`--dry-run` validates the config and prints the plan only. It must report `training_started=false` and `checkpoint_written=false`, and it must not create checkpoint files.
+
+Running without `--dry-run` enters the guarded actual training branch after validation. The branch loads the pre-SNS bundle metadata, the 0059 train-only curriculum manifest, the curriculum schedule, and profile sampling weights. It executes the three curriculum phases, writes `training_log.jsonl`, and writes both checkpoint files:
+
+- `snsaug_aware_multihead_forensics_v1_best.pt`
+- `snsaug_aware_multihead_forensics_v1_last.pt`
+
+Small local sanity runs can use `max_steps_per_phase`, `phase_1_max_steps`, `phase_2_max_steps`, and `phase_3_max_steps` with values up to 30. Larger real training should be launched deliberately outside unit validation.
+
+Subset evaluation summaries must be marked with `eval_subset_only=true`, `full_evaluation_ran=false`, and `sample_count`. Do not treat these as full benchmark metrics.
+
+## Troubleshooting
+
+If a tmux session disappears quickly and the log or printed JSON shows `training_started=false` for a non-dry-run invocation, the actual training branch did not run. Validate dry-run separately from the actual run, then inspect `artifact_manifest.json`.
+
+For a successful non-dry-run actual branch, `artifact_manifest.json` must include:
+
+- `training_started=true`
+- `checkpoint_written=true`
+- `best_checkpoint_path`
+- `last_checkpoint_path`

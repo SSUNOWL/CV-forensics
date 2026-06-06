@@ -34,6 +34,10 @@
   "output_root": "/home/rlatjswo/cvf_runs/snsaug_v2_0060b_full_curriculum_finetune_YYYYMMDD_HHMMSS",
   "checkpoint_root": "/home/rlatjswo/cvf_checkpoints/snsaug_v2_0060b_full_curriculum_finetune_YYYYMMDD_HHMMSS",
   "real_fpr_limit": 0.05,
+  "max_steps_per_phase": 30,
+  "phase_1_max_steps": 30,
+  "phase_2_max_steps": 30,
+  "phase_3_max_steps": 30,
   "best_checkpoint_policy": {
     "primary": "snsaug_tampered_recall_plus_valid_iou",
     "secondary": "clean_macro_f1",
