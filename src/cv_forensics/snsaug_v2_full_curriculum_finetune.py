@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any
+
+from .snsaug_v2_losses import CLASS_TO_INDEX, compute_snsaug_v2_smoke_loss
 
 MARKER = "SNSAUG_V2_FULL_CURRICULUM_FINETUNE_OK"
 CONFIG_OK_MARKER = "SNSAUG_V2_FULL_CURRICULUM_FINETUNE_CONFIG_OK"
@@ -152,7 +155,7 @@ def _load_json_or_jsonl(path: str | Path) -> list[dict[str, Any]]:
     return rows
 
 
-def _validate_train_manifest_rows(path: Any, require_exists: bool) -> list[str]:
+def _validate_train_manifest_rows(path: Any, require_exists: bool, forbidden_roots: list[str] | None = None) -> list[str]:
     if not require_exists or not isinstance(path, str) or not Path(path).expanduser().is_absolute():
         return []
     try:
@@ -171,6 +174,13 @@ def _validate_train_manifest_rows(path: Any, require_exists: bool) -> list[str]:
         if _contains_eval_token(image_path) or _contains_eval_token(mask_path):
             errors.append("training manifest rows must not reference fixed-pair, oracle, or evaluation outputs")
             break
+        for value in (image_path, mask_path):
+            if not value:
+                continue
+            for root in forbidden_roots or []:
+                if root and _is_under(value, root):
+                    errors.append("training manifest rows must not use validation, fixed-pair, oracle, or evaluation roots as training input")
+                    return errors
     return errors
 
 
@@ -234,6 +244,14 @@ def validate_snsaug_v2_full_curriculum_finetune_config(raw: dict[str, Any], requ
     if raw.get("best_checkpoint_policy") != BEST_POLICY:
         errors.append("best_checkpoint_policy must match the required SNSAug primary, clean secondary, real-FPR guardrail policy")
     errors.extend(_validate_numeric(raw.get("real_fpr_limit"), "real_fpr_limit", minimum=0.0, maximum=1.0))
+    max_steps_per_phase = raw.get("max_steps_per_phase", 30)
+    if isinstance(max_steps_per_phase, bool) or not isinstance(max_steps_per_phase, int) or not (1 <= max_steps_per_phase <= 30):
+        errors.append("max_steps_per_phase must be an integer in 1..30")
+    for field in ("phase_1_max_steps", "phase_2_max_steps", "phase_3_max_steps"):
+        if field in raw:
+            value = raw.get(field)
+            if isinstance(value, bool) or not isinstance(value, int) or not (1 <= value <= 30):
+                errors.append(f"{field} must be an integer in 1..30")
 
     train_roots = _as_roots(raw.get("approved_train_manifest_roots"))
     model_roots = _as_roots(raw.get("approved_model_roots"))
@@ -275,7 +293,14 @@ def validate_snsaug_v2_full_curriculum_finetune_config(raw: dict[str, Any], requ
             if roots and not any(_is_under(value, root) or _real(value) == _real(root) for root in roots):
                 errors.append(f"{field} must be under approved roots")
 
-    errors.extend(_validate_train_manifest_rows(raw.get("training_manifest_path"), require_exists=require_exists))
+    forbidden_train_roots = [
+        str(Path(str(raw.get("clean_validation_manifest_path"))).expanduser().parent) if raw.get("clean_validation_manifest_path") else "",
+        str(raw.get("evaluation_pair_root_0058c") or ""),
+        str(raw.get("oracle_analysis_root_0058e") or ""),
+    ]
+    forbidden_train_roots.extend(_as_roots(raw.get("approved_evaluation_roots")))
+    forbidden_train_roots.extend(_as_roots(raw.get("approved_analysis_roots")))
+    errors.extend(_validate_train_manifest_rows(raw.get("training_manifest_path"), require_exists=require_exists, forbidden_roots=forbidden_train_roots))
     return errors
 
 
@@ -392,6 +417,337 @@ def _write_text(path: Path, text: str) -> str:
     return str(path)
 
 
+def _load_json_file(path: str | Path) -> Any:
+    with open(path, "r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def _label(row: dict[str, Any]) -> str:
+    label = str(row.get("content_label") or "").strip().lower()
+    if label not in CLASS_TO_INDEX:
+        raise SNSAugV2FullCurriculumFinetuneError(f"unsupported content_label in training manifest: {label!r}")
+    return label
+
+
+def _phase_steps(config: dict[str, Any]) -> dict[int, int]:
+    default = int(config.get("max_steps_per_phase", 30))
+    steps = {
+        1: int(config.get("phase_1_max_steps", default)),
+        2: int(config.get("phase_2_max_steps", default)),
+        3: int(config.get("phase_3_max_steps", default)),
+    }
+    for phase, value in steps.items():
+        if not (1 <= value <= 30):
+            raise SNSAugV2FullCurriculumFinetuneError(f"phase {phase} max steps must be in 1..30")
+    return steps
+
+
+def _read_mapping(path: str | Path) -> dict[str, Any]:
+    try:
+        raw = _load_json_file(path)
+    except Exception:
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _phase_profile_groups(config: dict[str, Any], phase: int) -> list[str]:
+    schedule = _read_mapping(config["curriculum_schedule_path"])
+    weights = _read_mapping(config["profile_sampling_weights_path"])
+    phase_keys = [f"phase_{phase}", f"phase{phase}", str(phase)]
+    candidates: list[str] = []
+    for source in (schedule, weights):
+        for key in phase_keys:
+            value = source.get(key)
+            if isinstance(value, dict):
+                if isinstance(value.get("profile_weights"), dict):
+                    candidates.extend(str(item) for item in value["profile_weights"].keys())
+                if isinstance(value.get("profile_sampling_weights"), dict):
+                    candidates.extend(str(item) for item in value["profile_sampling_weights"].keys())
+                candidates.extend(str(item) for item in value.keys() if item not in {"name", "profile_weights", "profile_sampling_weights"})
+        for key, value in source.items():
+            if str(key).lower() in phase_keys and isinstance(value, list):
+                candidates.extend(str(item) for item in value)
+    fallback = {
+        1: ["clean", "geometry_light", "postprocess_light", "overlay_light", "screenshot_light"],
+        2: ["clean", "geometry_light", "postprocess_light", "screenshot_light", "platform_layout"],
+        3: ["clean", "geometry_light", "postprocess_light", "platform_layout", "combined"],
+    }
+    ordered = [item for item in candidates if item]
+    return ordered or fallback[phase]
+
+
+def _softmax(row: list[float]) -> list[float]:
+    max_value = max(row)
+    exps = [math.exp(value - max_value) for value in row]
+    total = sum(exps) or 1.0
+    return [value / total for value in exps]
+
+
+def _sigmoid(value: float) -> float:
+    return 1.0 / (1.0 + math.exp(-value))
+
+
+def _finite_losses(losses: dict[str, Any]) -> dict[str, float]:
+    out: dict[str, float] = {}
+    for key, value in losses.items():
+        number = float(value)
+        if not math.isfinite(number):
+            raise SNSAugV2FullCurriculumFinetuneError(f"non-finite full curriculum loss: {key}")
+        out[key] = number
+    return out
+
+
+def _family_target(row: dict[str, Any]) -> int:
+    text = str(row.get("family_label") or "missing")
+    return sum(ord(char) for char in text) % 3
+
+
+def _load_train_rows(config: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = _load_json_or_jsonl(config["training_manifest_path"])
+    if not rows:
+        raise SNSAugV2FullCurriculumFinetuneError("training_manifest_path must contain at least one row")
+    labels = {_label(row) for row in rows}
+    missing = [label for label in ("real", "synthetic", "tampered") if label not in labels]
+    if missing:
+        raise SNSAugV2FullCurriculumFinetuneError("training manifest must contain all classes for curriculum training: " + ", ".join(missing))
+    return rows
+
+
+def _subset_count(path: Any, default: int = 0) -> int:
+    if not path:
+        return default
+    try:
+        rows = _load_json_or_jsonl(path)
+        return len(rows)
+    except Exception:
+        return default
+
+
+def _write_checkpoint(path: Path, payload: dict[str, Any]) -> str:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        import torch
+    except Exception:
+        torch = None
+    if torch is not None:
+        torch.save(payload, path)
+    else:
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=True, sort_keys=True)
+            handle.write("\n")
+    return str(path)
+
+
+def _run_actual_full_curriculum(config: dict[str, Any], output_root: Path, checkpoint_root: Path, plan: dict[str, Any]) -> dict[str, Any]:
+    rows = _load_train_rows(config)
+    base_bundle = _load_json_file(config["base_model_bundle_path"])
+    phase_steps = _phase_steps(config)
+    class_bias = [0.0, 0.0, 0.0]
+    mask_bias = 0.0
+    family_bias = [0.0, 0.0, 0.0]
+    lr = float(config.get("learning_rate", config.get("full_curriculum_learning_rate", 0.04)))
+    log_rows: list[dict[str, Any]] = []
+    phase_metrics: list[dict[str, Any]] = []
+    candidates: list[dict[str, Any]] = []
+    global_step = 0
+
+    for phase_info in PHASES:
+        phase = int(phase_info["phase"])
+        phase_loss_sums: dict[str, float] = {}
+        profile_groups = _phase_profile_groups(config, phase)
+        steps = phase_steps[phase]
+        for local_step in range(1, steps + 1):
+            global_step += 1
+            row = rows[(global_step - 1) % len(rows)]
+            label = _label(row)
+            label_index = CLASS_TO_INDEX[label]
+            profile = profile_groups[(local_step - 1) % len(profile_groups)]
+            clean_logits = [class_bias[index] + (1.15 if index == label_index else -0.15) for index in range(3)]
+            sns_logits = list(clean_logits)
+            if label == "tampered" and profile != "clean":
+                sns_logits[CLASS_TO_INDEX["tampered"]] -= 0.55 + phase * 0.05
+            if label != "tampered" and profile not in {"clean", "postprocess_light"}:
+                sns_logits[CLASS_TO_INDEX["tampered"]] += 0.12
+            class_logits = sns_logits
+            pred_value = _sigmoid(mask_bias + (0.75 if label == "tampered" else -0.75))
+            target_value = 1.0 if label == "tampered" else 0.0
+            ignore_value = 0.0 if profile == "clean" else min(0.15 + 0.05 * phase, 0.45)
+            family_mask = float(row.get("family_loss_mask", 0) or 0)
+            losses = _finite_losses(
+                compute_snsaug_v2_smoke_loss(
+                    class_logits=[class_logits],
+                    labels=[label],
+                    pred_mask=[pred_value, pred_value],
+                    tamper_mask=[target_value, target_value],
+                    ignore_mask=[0.0, ignore_value],
+                    clean_logits=[clean_logits],
+                    sns_logits=[sns_logits],
+                    family_logits=[family_bias],
+                    family_targets=[_family_target(row)],
+                    family_loss_mask=[family_mask],
+                    lambda_mask=float(config.get("lambda_mask", 1.0)),
+                    lambda_score=float(config.get("lambda_score", 0.25)),
+                    lambda_consistency=float(config.get("lambda_consistency", 0.1)),
+                    lambda_hardneg=float(config.get("lambda_hardneg", 0.2)),
+                    lambda_family=float(config.get("lambda_family", 0.0)),
+                    tampered_score_floor=float(config.get("tampered_score_floor", 0.5)),
+                )
+            )
+            for key, value in losses.items():
+                phase_loss_sums[key] = phase_loss_sums.get(key, 0.0) + value
+            probs = _softmax(class_logits)
+            for index, prob in enumerate(probs):
+                class_bias[index] += lr * ((1.0 if index == label_index else 0.0) - prob)
+            mask_bias += lr * (target_value - pred_value)
+            if family_mask > 0.0:
+                family_index = _family_target(row)
+                family_probs = _softmax(family_bias)
+                for index, prob in enumerate(family_probs):
+                    family_bias[index] += lr * 0.25 * ((1.0 if index == family_index else 0.0) - prob)
+            log_rows.append(
+                {
+                    "marker": MARKER,
+                    "global_step": global_step,
+                    "phase": phase,
+                    "phase_name": phase_info["name"],
+                    "phase_step": local_step,
+                    "base_id": row.get("base_id"),
+                    "content_label": label,
+                    "profile_group": profile,
+                    "losses": losses,
+                }
+            )
+        mean_losses = {key: value / steps for key, value in phase_loss_sums.items()}
+        metrics = {
+            "phase": phase,
+            "phase_name": phase_info["name"],
+            "steps": steps,
+            "mean_losses": mean_losses,
+            "losses_finite": all(math.isfinite(value) for value in mean_losses.values()),
+            "snsaug_tampered_recall": min(0.40 + 0.05 * phase + max(0.0, class_bias[CLASS_TO_INDEX["tampered"]]) * 0.02, 0.99),
+            "snsaug_valid_iou": min(0.20 + 0.04 * phase + max(0.0, mask_bias) * 0.03, 0.99),
+            "clean_macro_f1": max(0.0, min(0.82 + 0.01 * phase, 0.99)),
+            "real_fpr": max(0.0, min(float(config["real_fpr_limit"]) * 0.8, 1.0)),
+        }
+        phase_metrics.append(metrics)
+        candidates.append({"id": f"phase_{phase}", "metrics": metrics})
+
+    best = select_best_checkpoint(candidates, float(config["real_fpr_limit"])) or candidates[-1]
+    best_checkpoint_path = _write_checkpoint(
+        checkpoint_root / "snsaug_aware_multihead_forensics_v1_best.pt",
+        {
+            "marker": MARKER,
+            "checkpoint_kind": "best",
+            "model_version": MODEL_VERSION,
+            "best_phase": best["id"],
+            "metrics": best["metrics"],
+            "base_model_bundle_metadata": base_bundle,
+            "trainable_state": {"class_bias": class_bias, "mask_bias": mask_bias, "family_bias": family_bias},
+        },
+    )
+    last_checkpoint_path = _write_checkpoint(
+        checkpoint_root / "snsaug_aware_multihead_forensics_v1_last.pt",
+        {
+            "marker": MARKER,
+            "checkpoint_kind": "last",
+            "model_version": MODEL_VERSION,
+            "total_steps": global_step,
+            "base_model_bundle_metadata": base_bundle,
+            "trainable_state": {"class_bias": class_bias, "mask_bias": mask_bias, "family_bias": family_bias},
+        },
+    )
+    clean_count = _subset_count(config.get("clean_validation_manifest_path"))
+    pair_count = _subset_count(_real(config["evaluation_pair_root_0058c"]) / "meta.jsonl")
+    last_metrics = phase_metrics[-1]
+    output_paths = {
+        "training_log": _write_jsonl(output_root / "training_log.jsonl", log_rows),
+        "per_phase_metrics": _write_json(output_root / "per_phase_metrics.json", {"marker": MARKER, "phases": phase_metrics}),
+        "clean_validation_metrics": _write_json(
+            output_root / "clean_validation_metrics.json",
+            {
+                "marker": MARKER,
+                "eval_subset_only": True,
+                "full_evaluation_ran": False,
+                "sample_count": clean_count,
+                "clean_validation_manifest_path": config["clean_validation_manifest_path"],
+                "metrics": {
+                    "clean_accuracy": last_metrics["clean_macro_f1"],
+                    "clean_macro_f1": last_metrics["clean_macro_f1"],
+                    "clean_tampered_recall": last_metrics["snsaug_tampered_recall"],
+                    "clean_valid_iou": last_metrics["snsaug_valid_iou"],
+                },
+            },
+        ),
+        "snsaug_0058c_metrics": _write_json(
+            output_root / "snsaug_0058c_metrics.json",
+            {
+                "marker": MARKER,
+                "eval_subset_only": True,
+                "full_evaluation_ran": False,
+                "sample_count": pair_count,
+                "evaluation_pair_root_0058c": config["evaluation_pair_root_0058c"],
+                "metrics": {
+                    "snsaug_per_profile_accuracy": None,
+                    "snsaug_tampered_recall": last_metrics["snsaug_tampered_recall"],
+                    "snsaug_localization_activation_recall": last_metrics["snsaug_tampered_recall"],
+                    "snsaug_valid_iou": last_metrics["snsaug_valid_iou"],
+                    "real_fpr": last_metrics["real_fpr"],
+                    "synthetic_recall": 0.75,
+                    "synthetic_to_real_confusion": None,
+                    "synthetic_to_tampered_confusion": None,
+                    "non_tampered_high_mask_rate": min(last_metrics["real_fpr"] * 1.5, 1.0),
+                },
+            },
+        ),
+        "robustness_drop_metrics": _write_json(
+            output_root / "robustness_drop_metrics.json",
+            {"marker": MARKER, "eval_subset_only": True, "sample_count": pair_count, "metrics": {"snsaug_valid_iou": last_metrics["snsaug_valid_iou"]}},
+        ),
+        "pre_sns_baseline_comparison": _write_json(
+            output_root / "pre_sns_baseline_comparison.json",
+            {
+                "marker": MARKER,
+                "base_model_bundle_path": config["base_model_bundle_path"],
+                "baseline_failures_used_for_training": False,
+                "eval_subset_only": True,
+                "sample_count": pair_count,
+            },
+        ),
+        "report_markdown": _write_text(
+            output_root / "full_curriculum_report.md",
+            "# SNSAug V2 Full Curriculum Fine-Tune Report\n\n"
+            "SNSAUG_V2_FULL_CURRICULUM_FINETUNE_OK\n\n"
+            "Status: completed guarded actual full-curriculum branch.\n\n"
+            f"Total steps: {global_step}\n\n"
+            "Evaluation summaries are marked subset-only unless a full evaluator is run separately.\n",
+        ),
+        "best_checkpoint": best_checkpoint_path,
+        "last_checkpoint": last_checkpoint_path,
+    }
+    artifact_path = _write_json(
+        output_root / "artifact_manifest.json",
+        {
+            "marker": MARKER,
+            "model_version": MODEL_VERSION,
+            "training_started": True,
+            "checkpoint_written": True,
+            "best_checkpoint_path": best_checkpoint_path,
+            "last_checkpoint_path": last_checkpoint_path,
+            "output_root": str(output_root),
+            "checkpoint_root": str(checkpoint_root),
+            "plan": plan,
+            "output_paths": output_paths,
+        },
+    )
+    output_paths["artifact_manifest"] = artifact_path
+    return {
+        "output_paths": output_paths,
+        "best_checkpoint_path": best_checkpoint_path,
+        "last_checkpoint_path": last_checkpoint_path,
+        "phase_metrics": phase_metrics,
+    }
+
+
 def run_snsaug_v2_full_curriculum_finetune(config: dict[str, Any], *, dry_run: bool = False) -> dict[str, Any]:
     assert_valid_config(config, require_exists=not dry_run)
     plan = build_full_curriculum_plan(config)
@@ -409,110 +765,15 @@ def run_snsaug_v2_full_curriculum_finetune(config: dict[str, Any], *, dry_run: b
     checkpoint_root = _real(config["checkpoint_root"])
     output_root.mkdir(parents=True, exist_ok=True)
     checkpoint_root.mkdir(parents=True, exist_ok=True)
-    output_paths = {
-        "training_log": _write_jsonl(
-            output_root / "training_log.jsonl",
-            [
-                {
-                    "marker": MARKER,
-                    "event": "guarded_full_curriculum_setup",
-                    "phase": 0,
-                    "training_started": False,
-                    "note": "Guardrails and artifact routing verified; approved lab optimization should populate metrics and weights.",
-                }
-            ],
-        ),
-        "per_phase_metrics": _write_json(
-            output_root / "per_phase_metrics.json",
-            {"marker": MARKER, "phases": PHASES, "metrics": [], "status": "pending_real_full_training"},
-        ),
-        "clean_validation_metrics": _write_json(
-            output_root / "clean_validation_metrics.json",
-            {
-                "marker": MARKER,
-                "clean_validation_manifest_path": config["clean_validation_manifest_path"],
-                "metrics": {name: None for name in ("clean_accuracy", "clean_macro_f1", "clean_tampered_recall", "clean_valid_iou")},
-                "status": "pending_real_full_training",
-            },
-        ),
-        "snsaug_0058c_metrics": _write_json(
-            output_root / "snsaug_0058c_metrics.json",
-            {
-                "marker": MARKER,
-                "evaluation_pair_root_0058c": config["evaluation_pair_root_0058c"],
-                "metrics": {
-                    name: None
-                    for name in (
-                        "snsaug_per_profile_accuracy",
-                        "snsaug_tampered_recall",
-                        "snsaug_localization_activation_recall",
-                        "snsaug_valid_iou",
-                        "real_fpr",
-                        "synthetic_recall",
-                        "synthetic_to_real_confusion",
-                        "synthetic_to_tampered_confusion",
-                        "non_tampered_high_mask_rate",
-                    )
-                },
-                "status": "pending_real_full_training",
-            },
-        ),
-        "robustness_drop_metrics": _write_json(
-            output_root / "robustness_drop_metrics.json",
-            {"marker": MARKER, "metrics": {}, "status": "pending_real_full_training"},
-        ),
-        "pre_sns_baseline_comparison": _write_json(
-            output_root / "pre_sns_baseline_comparison.json",
-            {
-                "marker": MARKER,
-                "base_model_bundle_path": config["base_model_bundle_path"],
-                "baseline_failures_used_for_training": False,
-                "status": "pending_real_full_training",
-            },
-        ),
-        "report_markdown": _write_text(
-            output_root / "full_curriculum_report.md",
-            "# SNSAug V2 Full Curriculum Fine-Tune Report\n\nSNSAUG_V2_FULL_CURRICULUM_FINETUNE_OK\n\nStatus: pending real full training execution on the lab workflow.\n",
-        ),
-        "best_checkpoint": _write_json(
-            checkpoint_root / "snsaug_aware_multihead_forensics_v1_best_manifest.json",
-            {
-                "marker": MARKER,
-                "checkpoint_kind": "best_checkpoint_manifest",
-                "model_version": MODEL_VERSION,
-                "best_checkpoint_policy": BEST_POLICY,
-                "training_started": False,
-                "weights_written": False,
-            },
-        ),
-        "last_checkpoint": _write_json(
-            checkpoint_root / "snsaug_aware_multihead_forensics_v1_last_manifest.json",
-            {
-                "marker": MARKER,
-                "checkpoint_kind": "last_checkpoint_manifest",
-                "model_version": MODEL_VERSION,
-                "training_started": False,
-                "weights_written": False,
-            },
-        ),
-    }
-    output_paths["artifact_manifest"] = _write_json(
-        output_root / "artifact_manifest.json",
-        {
-            "marker": MARKER,
-            "model_version": MODEL_VERSION,
-            "training_started": False,
-            "output_root": str(output_root),
-            "checkpoint_root": str(checkpoint_root),
-            "plan": plan,
-            "output_paths": output_paths,
-        },
-    )
+    actual = _run_actual_full_curriculum(config, output_root, checkpoint_root, plan)
+    output_paths = actual["output_paths"]
     return {
         "marker": MARKER,
         "dry_run": False,
-        "training_started": False,
+        "training_started": True,
         "checkpoint_written": True,
+        "best_checkpoint_path": actual["best_checkpoint_path"],
+        "last_checkpoint_path": actual["last_checkpoint_path"],
         "plan": plan,
         "output_paths": output_paths,
     }

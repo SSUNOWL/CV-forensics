@@ -100,6 +100,10 @@ def safe_config(root: Path) -> dict[str, object]:
         "output_root": str(root / "runs" / "full"),
         "checkpoint_root": str(root / "ckpts" / "full"),
         "real_fpr_limit": 0.05,
+        "max_steps_per_phase": 3,
+        "phase_1_max_steps": 2,
+        "phase_2_max_steps": 2,
+        "phase_3_max_steps": 2,
         "best_checkpoint_policy": BEST_POLICY,
         "no_network": True,
         "no_download": True,
@@ -127,6 +131,21 @@ def test_train_only_manifest_and_eval_training_input_rejected() -> None:
     cfg["training_manifest_path"] = str(Path(cfg["approved_train_manifest_roots"][0]) / "fixed_pairs_manifest.jsonl")
     errors = validate_snsaug_v2_full_curriculum_finetune_config(cfg, require_exists=False)
     assert_true(any("fixed-pair" in error for error in errors), "fixed pair training input rejected")
+    cfg = safe_config(temp_root("cvf_0060b_evalrow_"))
+    with open(str(cfg["training_manifest_path"]), "a", encoding="utf-8") as handle:
+        handle.write(
+            json.dumps(
+                {
+                    "base_id": "eval_image_bad",
+                    "split": "train",
+                    "image_path": str(Path(cfg["evaluation_pair_root_0058c"]) / "image.png"),
+                    "content_label": "real",
+                }
+            )
+            + "\n"
+        )
+    errors = validate_snsaug_v2_full_curriculum_finetune_config(cfg, require_exists=True)
+    assert_true(any("evaluation roots" in error or "fixed-pair" in error or "validation" in error for error in errors), "eval image training input rejected")
 
 
 def test_output_checkpoint_roots_and_required_policy_rejected() -> None:
@@ -143,6 +162,12 @@ def test_output_checkpoint_roots_and_required_policy_rejected() -> None:
     cfg = safe_config(root)
     cfg["best_checkpoint_policy"] = {"primary": "clean_only"}
     assert_true(validate_snsaug_v2_full_curriculum_finetune_config(cfg, require_exists=False), "best policy required")
+    cfg = safe_config(root)
+    cfg["max_steps_per_phase"] = 31
+    assert_true(validate_snsaug_v2_full_curriculum_finetune_config(cfg, require_exists=False), "max steps per phase rejected")
+    cfg = safe_config(root)
+    cfg["phase_2_max_steps"] = 0
+    assert_true(validate_snsaug_v2_full_curriculum_finetune_config(cfg, require_exists=False), "phase steps rejected")
 
 
 def test_best_checkpoint_policy_and_real_fpr_guardrail() -> None:
@@ -172,12 +197,14 @@ def test_dry_run_starts_no_training_and_lists_outputs() -> None:
     assert_true(not Path(cfg["checkpoint_root"]).exists(), "checkpoint root not created")
 
 
-def test_guarded_materialization_writes_required_artifacts_outside_repo() -> None:
+def test_actual_tiny_training_writes_required_artifacts_and_checkpoints_outside_repo() -> None:
     root = temp_root("cvf_0060b_materialize_")
     cfg = safe_config(root)
     summary = run_snsaug_v2_full_curriculum_finetune(cfg, dry_run=False)
-    assert_true(summary["training_started"] is False, "unit path does not optimize")
-    assert_true(summary["checkpoint_written"] is True, "checkpoint routing manifests written")
+    assert_true(summary["training_started"] is True, "actual branch starts training")
+    assert_true(summary["checkpoint_written"] is True, "checkpoints written")
+    assert_true(str(summary["best_checkpoint_path"]).endswith(".pt"), "best checkpoint is .pt")
+    assert_true(str(summary["last_checkpoint_path"]).endswith(".pt"), "last checkpoint is .pt")
     expected = {
         "training_log",
         "per_phase_metrics",
@@ -195,6 +222,24 @@ def test_guarded_materialization_writes_required_artifacts_outside_repo() -> Non
         path_obj = Path(path)
         assert_true(path_obj.exists(), f"{path} exists")
         assert_true(not str(path_obj).startswith(str(REPO_ROOT)), "artifact outside repo")
+    assert_true(Path(summary["output_paths"]["best_checkpoint"]).name == "snsaug_aware_multihead_forensics_v1_best.pt", "best pt name")
+    assert_true(Path(summary["output_paths"]["last_checkpoint"]).name == "snsaug_aware_multihead_forensics_v1_last.pt", "last pt name")
+    artifact = json.loads(Path(summary["output_paths"]["artifact_manifest"]).read_text(encoding="utf-8"))
+    assert_true(artifact["training_started"] is True, "artifact records training_started")
+    assert_true(artifact["checkpoint_written"] is True, "artifact records checkpoint_written")
+    assert_true(Path(artifact["best_checkpoint_path"]).exists(), "artifact best checkpoint exists")
+    assert_true(Path(artifact["last_checkpoint_path"]).exists(), "artifact last checkpoint exists")
+    phase_metrics = json.loads(Path(summary["output_paths"]["per_phase_metrics"]).read_text(encoding="utf-8"))
+    assert_equal(len(phase_metrics["phases"]), 3, "three phase metrics")
+    for phase in phase_metrics["phases"]:
+        assert_true(phase["losses_finite"] is True, "phase losses finite")
+        assert_true(float(phase["mean_losses"]["total_loss"]) >= 0.0, "total loss finite")
+    clean_eval = json.loads(Path(summary["output_paths"]["clean_validation_metrics"]).read_text(encoding="utf-8"))
+    sns_eval = json.loads(Path(summary["output_paths"]["snsaug_0058c_metrics"]).read_text(encoding="utf-8"))
+    assert_true(clean_eval["eval_subset_only"] is True, "clean eval marked subset")
+    assert_true("sample_count" in clean_eval, "clean sample count")
+    assert_true(sns_eval["eval_subset_only"] is True, "sns eval marked subset")
+    assert_true("sample_count" in sns_eval, "sns sample count")
 
 
 def test_plan_schema_contains_phases_and_metrics() -> None:
@@ -213,7 +258,7 @@ def main() -> int:
         test_output_checkpoint_roots_and_required_policy_rejected,
         test_best_checkpoint_policy_and_real_fpr_guardrail,
         test_dry_run_starts_no_training_and_lists_outputs,
-        test_guarded_materialization_writes_required_artifacts_outside_repo,
+        test_actual_tiny_training_writes_required_artifacts_and_checkpoints_outside_repo,
         test_plan_schema_contains_phases_and_metrics,
     ]
     for test in tests:
