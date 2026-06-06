@@ -1,0 +1,44 @@
+{
+  "schema_version": "1.0",
+  "config_kind": "approved_snsaug_v2_finetune_smoke",
+  "execution_mode": "approved_local_snsaug_v2_finetune_smoke",
+  "run_kind": "smoke",
+  "model_version": "snsaug_aware_multihead_forensics_v1",
+  "approval_text": "I_APPROVE_SNSAUG_V2_FINETUNE_SMOKE",
+  "training_manifest_path": "/home/rlatjswo/cvf_runs/snsaug_v2_0059_train_curriculum_manifest_YYYYMMDD_HHMMSS/snsaug_v2_train_curriculum_manifest.jsonl",
+  "curriculum_schedule_path": "/home/rlatjswo/cvf_runs/snsaug_v2_0059_train_curriculum_manifest_YYYYMMDD_HHMMSS/snsaug_v2_curriculum_schedule.json",
+  "profile_sampling_weights_path": "/home/rlatjswo/cvf_runs/snsaug_v2_0059_train_curriculum_manifest_YYYYMMDD_HHMMSS/snsaug_v2_profile_sampling_weights.json",
+  "base_model_bundle_path": "/home/rlatjswo/projects/cv-forensics/.local/pre_sns_current_best_model_bundle.json",
+  "evaluation_pair_root": "/home/rlatjswo/cvf_runs/snsaug_v2_0058c_small_val_pairs_20pc_balanced_20260605_220707",
+  "approved_train_manifest_roots": [
+    "/home/rlatjswo/cvf_runs"
+  ],
+  "approved_model_roots": [
+    "/home/rlatjswo/projects/cv-forensics/.local"
+  ],
+  "approved_evaluation_roots": [
+    "/home/rlatjswo/cvf_runs"
+  ],
+  "approved_output_roots": [
+    "/home/rlatjswo/cvf_runs"
+  ],
+  "approved_checkpoint_roots": [
+    "/home/rlatjswo/cvf_checkpoints"
+  ],
+  "output_root": "/home/rlatjswo/cvf_runs/snsaug_v2_0060a_finetune_smoke_YYYYMMDD_HHMMSS",
+  "checkpoint_root": "/home/rlatjswo/cvf_checkpoints/snsaug_v2_0060a_finetune_smoke_YYYYMMDD_HHMMSS",
+  "max_steps": 200,
+  "epochs": 1,
+  "batch_size": 2,
+  "samples_per_class": 16,
+  "lambda_mask": 1.0,
+  "lambda_score": 0.25,
+  "lambda_consistency": 0.1,
+  "lambda_hardneg": 0.2,
+  "lambda_family": 0.0,
+  "tampered_score_floor": 0.5,
+  "mixed_precision": false,
+  "save_every_steps": 50,
+  "no_network": true,
+  "no_download": true
+}
