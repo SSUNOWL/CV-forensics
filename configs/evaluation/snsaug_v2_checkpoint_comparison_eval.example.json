@@ -7,22 +7,22 @@
   "meta_jsonl_path": "/home/rlatjswo/cvf_runs/snsaug_v2_0058c_small_val_pairs_20pc_balanced_20260605_220707/meta.jsonl",
   "models": [
     {
-      "model_id": "baseline",
+      "model_id": "pre_sns_baseline",
       "model_kind": "pre_sns_bundle",
       "model_path": "/home/rlatjswo/projects/cv-forensics/.local/pre_sns_current_best_model_bundle.json"
     },
     {
-      "model_id": "snsaug_30x3",
+      "model_id": "snsaug_guarded_short_30x3",
       "model_kind": "snsaug_finetuned_checkpoint",
       "model_path": "/home/rlatjswo/cvf_checkpoints/snsaug_v2_0060b_guarded_short_actual_20260607_035027/snsaug_aware_multihead_forensics_v1_best.pt"
     },
     {
-      "model_id": "snsaug_150x3",
+      "model_id": "snsaug_medium_150x3",
       "model_kind": "snsaug_finetuned_checkpoint",
       "model_path": "/home/rlatjswo/cvf_checkpoints/snsaug_v2_0060b_medium_actual_150x3_20260607_041453/snsaug_aware_multihead_forensics_v1_best.pt"
     }
   ],
-  "visual_gallery_model_id": "snsaug_150x3",
+  "visual_gallery_model_id": "snsaug_medium_150x3",
   "approved_model_roots": [
     "/home/rlatjswo/projects/cv-forensics/.local",
     "/home/rlatjswo/cvf_checkpoints"
