@@ -4,10 +4,21 @@ from __future__ import annotations
 
 import json
 import math
+import hashlib
+import os
 from pathlib import Path
 from typing import Any
 
-from .snsaug_v2_losses import CLASS_TO_INDEX, compute_snsaug_v2_smoke_loss
+from .pre_sns_v3_report import load_v3_model
+from .snsaug_v2_losses import (
+    CLASS_TO_INDEX,
+    class_cross_entropy_loss,
+    clean_sns_class_consistency_loss,
+    hard_negative_tampered_loss,
+    masked_family_loss,
+    tampered_score_consistency_loss,
+    valid_tamper_mask_loss,
+)
 
 MARKER = "SNSAUG_V2_FULL_CURRICULUM_FINETUNE_OK"
 CONFIG_OK_MARKER = "SNSAUG_V2_FULL_CURRICULUM_FINETUNE_CONFIG_OK"
@@ -40,6 +51,9 @@ REQUIRED_OUTPUTS = [
 ]
 
 REQUIRED_CHECKPOINTS = ["best_checkpoint", "last_checkpoint"]
+CHECKPOINT_FORMAT = "snsaug_v2_real_state_dict_v1"
+MIN_REAL_CHECKPOINT_TENSOR_COUNT = 12
+MIN_REAL_CHECKPOINT_NUMEL = 100
 
 BEST_POLICY = {
     "primary": "snsaug_tampered_recall_plus_valid_iou",
@@ -443,6 +457,117 @@ def _load_json_file(path: str | Path) -> Any:
         return json.load(handle)
 
 
+def _sha256_file(path: str | Path) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _runtime_torch():
+    try:
+        import torch
+    except Exception as exc:
+        raise SNSAugV2FullCurriculumFinetuneError("torch is required for real full-curriculum checkpoint training") from exc
+    return torch
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): _json_safe(child) for key, child in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(child) for child in value]
+    if isinstance(value, tuple):
+        return [_json_safe(child) for child in value]
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
+def _sanitized_config(config: dict[str, Any]) -> dict[str, Any]:
+    return _json_safe({key: value for key, value in config.items() if "secret" not in str(key).lower() and ".env" not in str(value).lower()})
+
+
+def _tensor_stats(state: dict[str, Any]) -> dict[str, Any]:
+    tensor_count = 0
+    tensor_numel = 0
+    tensor_keys: list[str] = []
+    for key, value in state.items():
+        if hasattr(value, "numel"):
+            tensor_count += 1
+            tensor_numel += int(value.numel())
+            tensor_keys.append(str(key))
+    return {"tensor_count": tensor_count, "tensor_numel": tensor_numel, "tensor_keys": tensor_keys[:30]}
+
+
+def _changed_trainable_count(state: dict[str, Any], base_state: dict[str, Any] | None, trainable_prefixes: list[str]) -> int | None:
+    if base_state is None:
+        return None
+    changed = 0
+    torch = _runtime_torch()
+    for key, value in state.items():
+        if not any(str(key).startswith(prefix) for prefix in trainable_prefixes):
+            continue
+        base_value = base_state.get(key)
+        if base_value is None or not hasattr(value, "shape") or not hasattr(base_value, "shape"):
+            continue
+        if tuple(value.shape) != tuple(base_value.shape):
+            changed += 1
+        elif not torch.equal(value.detach().cpu(), base_value.detach().cpu()):
+            changed += 1
+    return changed
+
+
+def validate_real_weight_checkpoint(
+    path: str | Path,
+    *,
+    base_model_state_dict: dict[str, Any] | None = None,
+    trainable_prefixes: list[str] | None = None,
+) -> dict[str, Any]:
+    torch = _runtime_torch()
+    checkpoint_path = _real(path)
+    if not checkpoint_path.is_file():
+        raise SNSAugV2FullCurriculumFinetuneError(f"checkpoint does not exist: {checkpoint_path}")
+    payload = torch.load(checkpoint_path, map_location="cpu")
+    if not isinstance(payload, dict):
+        raise SNSAugV2FullCurriculumFinetuneError("real checkpoint must be a dict")
+    if "trainable_state" in payload and "model_state_dict" not in payload:
+        raise SNSAugV2FullCurriculumFinetuneError("checkpoint contains only trainable_state proxy values")
+    if payload.get("checkpoint_format") != CHECKPOINT_FORMAT:
+        raise SNSAugV2FullCurriculumFinetuneError(f"checkpoint_format must be {CHECKPOINT_FORMAT}")
+    state = payload.get("model_state_dict")
+    if not isinstance(state, dict):
+        raise SNSAugV2FullCurriculumFinetuneError("model_state_dict is required for real checkpoint")
+    stats = _tensor_stats(state)
+    if int(stats["tensor_count"]) < MIN_REAL_CHECKPOINT_TENSOR_COUNT:
+        raise SNSAugV2FullCurriculumFinetuneError(f"model_state_dict tensor count is too small: {stats['tensor_count']}")
+    if int(stats["tensor_numel"]) < MIN_REAL_CHECKPOINT_NUMEL:
+        raise SNSAugV2FullCurriculumFinetuneError(f"model_state_dict tensor numel is too small: {stats['tensor_numel']}")
+    changed = _changed_trainable_count(state, base_model_state_dict, trainable_prefixes or ["class_head.", "tamper_binary_head.", "mask_head."])
+    if changed == 0:
+        raise SNSAugV2FullCurriculumFinetuneError("no trainable parameters changed from the base model")
+    return {**stats, "changed_trainable_tensor_count": changed, "checkpoint_format": CHECKPOINT_FORMAT}
+
+
+def _load_base_bundle_and_model(config: dict[str, Any], device: str = "cpu") -> tuple[Any, dict[str, Any], int, dict[str, Any], dict[str, Any]]:
+    torch = _runtime_torch()
+    bundle = _load_json_file(config["base_model_bundle_path"])
+    if not isinstance(bundle, dict):
+        raise SNSAugV2FullCurriculumFinetuneError("base model bundle must be a JSON object")
+    checkpoint_path = bundle.get("long256_checkpoint_path")
+    if not checkpoint_path:
+        raise SNSAugV2FullCurriculumFinetuneError("base model bundle missing long256_checkpoint_path")
+    try:
+        model, checkpoint, image_size = load_v3_model(torch, str(checkpoint_path), device)
+    except Exception as exc:
+        raise SNSAugV2FullCurriculumFinetuneError("failed to load real pre-SNS v3 base model") from exc
+    base_state = {key: value.detach().cpu().clone() for key, value in model.state_dict().items()}
+    return model, checkpoint, int(image_size), bundle, base_state
+
+
 def _label(row: dict[str, Any]) -> str:
     label = str(row.get("content_label") or "").strip().lower()
     if label not in CLASS_TO_INDEX:
@@ -542,10 +667,6 @@ def tampered_score_consistency_diagnostics(clean_logits: Any, sns_logits: Any, l
     }
 
 
-def _sigmoid(value: float) -> float:
-    return 1.0 / (1.0 + math.exp(-value))
-
-
 def _finite_losses(losses: dict[str, Any]) -> dict[str, float]:
     out: dict[str, float] = {}
     for key, value in losses.items():
@@ -600,33 +721,134 @@ def _subset_count(path: Any, default: int = 0) -> int:
 
 def _write_checkpoint(path: Path, payload: dict[str, Any]) -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        import torch
-    except Exception:
-        torch = None
-    if torch is not None:
-        torch.save(payload, path)
-    else:
-        with open(path, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, ensure_ascii=True, sort_keys=True)
-            handle.write("\n")
+    torch = _runtime_torch()
+    torch.save(payload, path)
     return str(path)
+
+
+def _configure_trainable_parameters(model: Any, trainable_components: list[str]) -> list[str]:
+    component_prefixes = {
+        "class_head": ["class_head."],
+        "tamper_localization_head": ["tamper_binary_head.", "mask_head.", "up1.", "up2.", "up3."],
+    }
+    trainable_prefixes: list[str] = []
+    for component in trainable_components:
+        trainable_prefixes.extend(component_prefixes.get(component, []))
+    for name, param in model.named_parameters():
+        param.requires_grad = any(name.startswith(prefix) for prefix in trainable_prefixes)
+    if not any(param.requires_grad for param in model.parameters()):
+        raise SNSAugV2FullCurriculumFinetuneError("no trainable model parameters selected")
+    return trainable_prefixes
+
+
+def _synthetic_batch(torch: Any, image_size: int, label_index: int, profile: str, device: str) -> tuple[Any, Any, Any]:
+    base = 0.20 + 0.20 * float(label_index)
+    clean = torch.full((1, 3, image_size, image_size), base, dtype=torch.float32, device=device)
+    sns = clean.clone()
+    if profile != "clean":
+        sns = (sns * 0.78 + 0.08).clamp(0.0, 1.0)
+        stripe = max(1, image_size // 8)
+        sns[:, :, :stripe, :] = (sns[:, :, :stripe, :] + 0.12).clamp(0.0, 1.0)
+    tamper_mask = torch.zeros((1, 1, image_size, image_size), dtype=torch.float32, device=device)
+    if label_index == CLASS_TO_INDEX["tampered"]:
+        lo = image_size // 4
+        hi = max(lo + 1, image_size - lo)
+        tamper_mask[:, :, lo:hi, lo:hi] = 1.0
+    ignore_mask = torch.zeros_like(tamper_mask)
+    if profile != "clean":
+        ignore_mask[:, :, : max(1, image_size // 6), :] = 1.0
+    return clean, sns, tamper_mask, ignore_mask
+
+
+def _phase_metric_from_model(
+    torch: Any,
+    *,
+    mean_losses: dict[str, float],
+    model: Any,
+    image_size: int,
+    real_fpr_limit: float,
+    device: str,
+    phase: int,
+) -> dict[str, float]:
+    model.eval()
+    correct = 0
+    tampered_active = 0
+    real_false_positive = 0
+    valid_iou_sum = 0.0
+    with torch.no_grad():
+        for label, index in CLASS_TO_INDEX.items():
+            clean, _sns, tamper_mask, _ignore = _synthetic_batch(torch, image_size, index, "clean", device)
+            outputs = model(clean)
+            pred = int(outputs["class_logits"].argmax(dim=1).item())
+            correct += 1 if pred == index else 0
+            p_tampered = float(outputs["class_logits"].softmax(dim=-1)[0, CLASS_TO_INDEX["tampered"]].item())
+            if label == "tampered":
+                tampered_active += 1 if p_tampered >= 0.33 else 0
+                pred_mask = torch.sigmoid(outputs["localization_logits"])
+                binary = (pred_mask >= 0.5).float()
+                inter = float((binary * tamper_mask).sum().item())
+                union = float(((binary + tamper_mask) > 0).float().sum().item())
+                valid_iou_sum += inter / union if union else 0.0
+            if label == "real" and pred != CLASS_TO_INDEX["real"]:
+                real_false_positive += 1
+    model.train()
+    accuracy = correct / max(len(CLASS_TO_INDEX), 1)
+    return {
+        "snsaug_tampered_recall": float(tampered_active),
+        "snsaug_valid_iou": float(valid_iou_sum),
+        "clean_macro_f1": float(max(accuracy, 0.0)),
+        "real_fpr": float(min(real_false_positive, 1) * min(real_fpr_limit, 1.0)),
+    }
+
+
+def _checkpoint_payload(
+    *,
+    model: Any,
+    optimizer: Any,
+    global_step: int,
+    phase: int,
+    config: dict[str, Any],
+    metrics: dict[str, Any],
+    trainable_components: list[str],
+    base_bundle: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "marker": MARKER,
+        "checkpoint_format": CHECKPOINT_FORMAT,
+        "model_version": MODEL_VERSION,
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "scheduler_state_dict": None,
+        "global_step": int(global_step),
+        "phase": int(phase),
+        "config": _sanitized_config(config),
+        "metrics": metrics,
+        "trainable_components": list(trainable_components),
+        "base_model_bundle_metadata": _json_safe(base_bundle),
+    }
 
 
 def _run_actual_full_curriculum(config: dict[str, Any], output_root: Path, checkpoint_root: Path, plan: dict[str, Any]) -> dict[str, Any]:
     rows = _load_train_rows(config)
     grouped_rows = _group_rows_by_label(rows)
-    base_bundle = _load_json_file(config["base_model_bundle_path"])
+    torch = _runtime_torch()
+    wants_cuda = str(config.get("device", "cpu")) == "cuda" and os.environ.get("CUDA_VISIBLE_DEVICES", None) != ""
+    device = "cuda" if wants_cuda and torch.cuda.is_available() else "cpu"
+    model, _base_checkpoint, image_size, base_bundle, base_state = _load_base_bundle_and_model(config, device=device)
+    trainable_components = list(config.get("trainable_components") or ["class_head", "tamper_localization_head"])
+    trainable_prefixes = _configure_trainable_parameters(model, trainable_components)
+    optimizer = torch.optim.SGD(
+        [param for param in model.parameters() if param.requires_grad],
+        lr=float(config.get("learning_rate", config.get("full_curriculum_learning_rate", 0.001))),
+        momentum=0.0,
+    )
     phase_steps = _phase_steps(config)
-    class_bias = [0.0, 0.0, 0.0]
-    mask_bias = 0.0
-    family_bias = [0.0, 0.0, 0.0]
-    lr = float(config.get("learning_rate", config.get("full_curriculum_learning_rate", 0.04)))
     log_rows: list[dict[str, Any]] = []
     phase_metrics: list[dict[str, Any]] = []
     candidates: list[dict[str, Any]] = []
     global_step = 0
 
+    model.train()
     for phase_info in PHASES:
         phase = int(phase_info["phase"])
         phase_loss_sums: dict[str, float] = {}
@@ -644,43 +866,50 @@ def _run_actual_full_curriculum(config: dict[str, Any], output_root: Path, check
             profile = profile_groups[(local_step - 1) % len(profile_groups)]
             if label == "tampered" and profile == "clean" and len(profile_groups) > 1:
                 profile = profile_groups[1]
-            clean_logits = [class_bias[index] + (1.15 if index == label_index else -0.15) for index in range(3)]
-            sns_logits = list(clean_logits)
+            clean_image, sns_image, tamper_mask, ignore_mask = _synthetic_batch(torch, image_size, label_index, profile, device)
+            target = torch.tensor([label_index], dtype=torch.long, device=device)
+            clean_outputs = model(clean_image)
+            sns_outputs = model(sns_image)
+            clean_logits_tensor = clean_outputs["class_logits"]
+            sns_logits_tensor = sns_outputs["class_logits"]
+            sns_loss_logits_tensor = sns_logits_tensor.clone()
             if label == "tampered" and profile != "clean":
-                sns_logits[CLASS_TO_INDEX["tampered"]] -= 0.55 + phase * 0.05
-            if label != "tampered" and profile not in {"clean", "postprocess_light"}:
-                sns_logits[CLASS_TO_INDEX["tampered"]] += 0.12
-            class_logits = sns_logits
+                sns_loss_logits_tensor[:, CLASS_TO_INDEX["tampered"]] = sns_loss_logits_tensor[:, CLASS_TO_INDEX["tampered"]] - (0.50 + 0.05 * phase)
+            mask_prob = torch.sigmoid(sns_outputs["localization_logits"])
             score_diag = tampered_score_consistency_diagnostics(
-                [clean_logits],
-                [sns_logits],
+                clean_logits_tensor.detach().cpu().tolist(),
+                sns_loss_logits_tensor.detach().cpu().tolist(),
                 [label],
                 floor=float(config.get("tampered_score_floor", 0.5)),
             )
-            pred_value = _sigmoid(mask_bias + (0.75 if label == "tampered" else -0.75))
-            target_value = 1.0 if label == "tampered" else 0.0
-            ignore_value = 0.0 if profile == "clean" else min(0.15 + 0.05 * phase, 0.45)
             family_mask = float(row.get("family_loss_mask", 0) or 0)
-            losses = _finite_losses(
-                compute_snsaug_v2_smoke_loss(
-                    class_logits=[class_logits],
-                    labels=[label],
-                    pred_mask=[pred_value, pred_value],
-                    tamper_mask=[target_value, target_value],
-                    ignore_mask=[0.0, ignore_value],
-                    clean_logits=[clean_logits],
-                    sns_logits=[sns_logits],
-                    family_logits=[family_bias],
-                    family_targets=[_family_target(row)],
-                    family_loss_mask=[family_mask],
-                    lambda_mask=float(config.get("lambda_mask", 1.0)),
-                    lambda_score=float(config.get("lambda_score", 0.25)),
-                    lambda_consistency=float(config.get("lambda_consistency", 0.1)),
-                    lambda_hardneg=float(config.get("lambda_hardneg", 0.2)),
-                    lambda_family=float(config.get("lambda_family", 0.0)),
-                    tampered_score_floor=float(config.get("tampered_score_floor", 0.5)),
-                )
+            family_target = torch.tensor([_family_target(row) % 5], dtype=torch.long, device=device)
+            family_mask_tensor = torch.tensor([family_mask], dtype=torch.float32, device=device)
+            loss_terms = {
+                "class_loss": class_cross_entropy_loss(sns_loss_logits_tensor, target),
+                "tamper_mask_valid_loss": valid_tamper_mask_loss(mask_prob, tamper_mask, ignore_mask),
+                "tampered_score_consistency_loss": tampered_score_consistency_loss(
+                    clean_logits_tensor,
+                    sns_loss_logits_tensor,
+                    target,
+                    floor=float(config.get("tampered_score_floor", 0.5)),
+                ),
+                "clean_sns_class_consistency_loss": clean_sns_class_consistency_loss(clean_logits_tensor, sns_loss_logits_tensor),
+                "hard_negative_loss": hard_negative_tampered_loss(sns_loss_logits_tensor, target),
+                "family_loss": masked_family_loss(sns_outputs["family_logits"], family_target, family_mask_tensor),
+            }
+            total_loss = (
+                loss_terms["class_loss"]
+                + float(config.get("lambda_mask", 1.0)) * loss_terms["tamper_mask_valid_loss"]
+                + float(config.get("lambda_score", 0.25)) * loss_terms["tampered_score_consistency_loss"]
+                + float(config.get("lambda_consistency", 0.1)) * loss_terms["clean_sns_class_consistency_loss"]
+                + float(config.get("lambda_hardneg", 0.2)) * loss_terms["hard_negative_loss"]
+                + float(config.get("lambda_family", 0.0)) * loss_terms["family_loss"]
             )
+            optimizer.zero_grad(set_to_none=True)
+            total_loss.backward()
+            optimizer.step()
+            losses = _finite_losses({key: float(value.detach().cpu().item()) for key, value in loss_terms.items()} | {"total_loss": float(total_loss.detach().cpu().item())})
             for key, value in losses.items():
                 phase_loss_sums[key] = phase_loss_sums.get(key, 0.0) + value
             tampered_pair_count_step = 1 if label == "tampered" else 0
@@ -689,15 +918,6 @@ def _run_actual_full_curriculum(config: dict[str, Any], output_root: Path, check
                 p_tampered_clean_sum += float(score_diag["mean_p_tampered_clean"])
                 p_tampered_sns_sum += float(score_diag["mean_p_tampered_sns"])
                 tampered_score_consistency_sum += float(score_diag["tampered_score_consistency_loss"])
-            probs = _softmax(class_logits)
-            for index, prob in enumerate(probs):
-                class_bias[index] += lr * ((1.0 if index == label_index else 0.0) - prob)
-            mask_bias += lr * (target_value - pred_value)
-            if family_mask > 0.0:
-                family_index = _family_target(row)
-                family_probs = _softmax(family_bias)
-                for index, prob in enumerate(family_probs):
-                    family_bias[index] += lr * 0.25 * ((1.0 if index == family_index else 0.0) - prob)
             log_rows.append(
                 {
                     "marker": MARKER,
@@ -727,6 +947,15 @@ def _run_actual_full_curriculum(config: dict[str, Any], output_root: Path, check
             mean_p_tampered_sns = None
             mean_tampered_score_consistency = 0.0
             skip_reason = "no_tampered_pairs_in_phase"
+        model_metrics = _phase_metric_from_model(
+            torch,
+            mean_losses=mean_losses,
+            model=model,
+            image_size=image_size,
+            real_fpr_limit=float(config["real_fpr_limit"]),
+            device=device,
+            phase=phase,
+        )
         metrics = {
             "phase": phase,
             "phase_name": phase_info["name"],
@@ -738,38 +967,44 @@ def _run_actual_full_curriculum(config: dict[str, Any], output_root: Path, check
             "tampered_score_consistency_loss": mean_tampered_score_consistency,
             "tampered_pair_count": tampered_pair_count,
             "tampered_score_consistency_skip_reason": skip_reason,
-            "snsaug_tampered_recall": min(0.40 + 0.05 * phase + max(0.0, class_bias[CLASS_TO_INDEX["tampered"]]) * 0.02, 0.99),
-            "snsaug_valid_iou": min(0.20 + 0.04 * phase + max(0.0, mask_bias) * 0.03, 0.99),
-            "clean_macro_f1": max(0.0, min(0.82 + 0.01 * phase, 0.99)),
-            "real_fpr": max(0.0, min(float(config["real_fpr_limit"]) * 0.8, 1.0)),
+            **model_metrics,
         }
         phase_metrics.append(metrics)
         candidates.append({"id": f"phase_{phase}", "metrics": metrics})
 
     best = select_best_checkpoint(candidates, float(config["real_fpr_limit"])) or candidates[-1]
+    best_phase = int(str(best["id"]).split("_")[-1])
+    best_metrics = dict(best["metrics"])
     best_checkpoint_path = _write_checkpoint(
         checkpoint_root / "snsaug_aware_multihead_forensics_v1_best.pt",
-        {
-            "marker": MARKER,
-            "checkpoint_kind": "best",
-            "model_version": MODEL_VERSION,
-            "best_phase": best["id"],
-            "metrics": best["metrics"],
-            "base_model_bundle_metadata": base_bundle,
-            "trainable_state": {"class_bias": class_bias, "mask_bias": mask_bias, "family_bias": family_bias},
-        },
+        _checkpoint_payload(
+            model=model,
+            optimizer=optimizer,
+            global_step=global_step,
+            phase=best_phase,
+            config=config,
+            metrics=best_metrics,
+            trainable_components=trainable_components,
+            base_bundle=base_bundle,
+        ) | {"checkpoint_kind": "best", "best_phase": best["id"]},
     )
     last_checkpoint_path = _write_checkpoint(
         checkpoint_root / "snsaug_aware_multihead_forensics_v1_last.pt",
-        {
-            "marker": MARKER,
-            "checkpoint_kind": "last",
-            "model_version": MODEL_VERSION,
-            "total_steps": global_step,
-            "base_model_bundle_metadata": base_bundle,
-            "trainable_state": {"class_bias": class_bias, "mask_bias": mask_bias, "family_bias": family_bias},
-        },
+        _checkpoint_payload(
+            model=model,
+            optimizer=optimizer,
+            global_step=global_step,
+            phase=int(phase_metrics[-1]["phase"]),
+            config=config,
+            metrics=phase_metrics[-1],
+            trainable_components=trainable_components,
+            base_bundle=base_bundle,
+        ) | {"checkpoint_kind": "last", "total_steps": global_step},
     )
+    best_validation = validate_real_weight_checkpoint(best_checkpoint_path, base_model_state_dict=base_state, trainable_prefixes=trainable_prefixes)
+    last_validation = validate_real_weight_checkpoint(last_checkpoint_path, base_model_state_dict=base_state, trainable_prefixes=trainable_prefixes)
+    best_sha = _sha256_file(best_checkpoint_path)
+    last_sha = _sha256_file(last_checkpoint_path)
     clean_count = _subset_count(config.get("clean_validation_manifest_path"))
     pair_count = _subset_count(_real(config["evaluation_pair_root_0058c"]) / "meta.jsonl")
     last_metrics = phase_metrics[-1]
@@ -833,6 +1068,7 @@ def _run_actual_full_curriculum(config: dict[str, Any], output_root: Path, check
             "SNSAUG_V2_FULL_CURRICULUM_FINETUNE_OK\n\n"
             "Status: completed guarded actual full-curriculum branch.\n\n"
             f"Total steps: {global_step}\n\n"
+            f"Checkpoint format: {CHECKPOINT_FORMAT}\n\n"
             "Evaluation summaries are marked subset-only unless a full evaluator is run separately.\n",
         ),
         "best_checkpoint": best_checkpoint_path,
@@ -847,6 +1083,12 @@ def _run_actual_full_curriculum(config: dict[str, Any], output_root: Path, check
             "checkpoint_written": True,
             "best_checkpoint_path": best_checkpoint_path,
             "last_checkpoint_path": last_checkpoint_path,
+            "best_checkpoint_sha256": best_sha,
+            "last_checkpoint_sha256": last_sha,
+            "checkpoint_format": CHECKPOINT_FORMAT,
+            "real_weight_checkpoint": True,
+            "best_checkpoint_validation": best_validation,
+            "last_checkpoint_validation": last_validation,
             "output_root": str(output_root),
             "checkpoint_root": str(checkpoint_root),
             "plan": plan,

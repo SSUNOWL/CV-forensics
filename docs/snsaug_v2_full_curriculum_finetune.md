@@ -64,6 +64,26 @@ Running without `--dry-run` enters the guarded actual training branch after vali
 - `snsaug_aware_multihead_forensics_v1_best.pt`
 - `snsaug_aware_multihead_forensics_v1_last.pt`
 
+## Real Checkpoint Format
+
+Full-curriculum checkpoints must be real PyTorch model checkpoints, not scalar training summaries. Each `.pt` file uses:
+
+```text
+checkpoint_format = snsaug_v2_real_state_dict_v1
+```
+
+Required checkpoint fields include:
+
+- `model_state_dict`
+- `optimizer_state_dict`
+- `global_step`
+- `phase`
+- `config`
+- `metrics`
+- `trainable_components`
+
+The `model_state_dict` is loaded from the real pre-SNS v3 architecture and updated by the guarded non-dry-run branch. Proxy-only checkpoint payloads containing only `trainable_state`, scalar biases, or synthetic state are invalid because the 0061B fixed-pair evaluator cannot run real checkpoint inference from them.
+
 Small local sanity runs can use `max_steps_per_phase`, `phase_1_max_steps`, `phase_2_max_steps`, and `phase_3_max_steps` with tiny values such as 30 or less. Approved medium runs may raise those phase steps up to `max_allowed_steps_per_phase`, which defaults to 500.
 
 `max_allowed_steps_per_phase` values above 500 require `allow_long_run_after_medium_pass=true` and are capped at 2000. Values such as 5000 are rejected. Unit validation should keep actual runner execution tiny and use validator-only checks for medium or long-run limits.
@@ -80,3 +100,9 @@ For a successful non-dry-run actual branch, `artifact_manifest.json` must includ
 - `checkpoint_written=true`
 - `best_checkpoint_path`
 - `last_checkpoint_path`
+- `best_checkpoint_sha256`
+- `last_checkpoint_sha256`
+- `checkpoint_format=snsaug_v2_real_state_dict_v1`
+- `real_weight_checkpoint=true`
+
+If 0061B reports `fine-tuned checkpoint has only trainable_state proxy values`, the checkpoint came from an old proxy branch or an invalid writer. Rerun the guarded full-curriculum branch after this fix and verify that `validate_real_weight_checkpoint` passes on both best and last checkpoints.

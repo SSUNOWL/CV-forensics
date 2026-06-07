@@ -18,15 +18,19 @@ if str(SRC_ROOT) not in sys.path:
 from cv_forensics.snsaug_v2_full_curriculum_finetune import (  # noqa: E402
     APPROVAL_TEXT,
     BEST_POLICY,
+    CHECKPOINT_FORMAT,
     MARKER,
     MODEL_VERSION,
+    SNSAugV2FullCurriculumFinetuneError,
     build_full_curriculum_plan,
     checkpoint_score,
     run_snsaug_v2_full_curriculum_finetune,
     select_best_checkpoint,
     tampered_score_consistency_diagnostics,
+    validate_real_weight_checkpoint,
     validate_snsaug_v2_full_curriculum_finetune_config,
 )
+from cv_forensics.pre_sns_v3_model import build_pre_sns_v3_model  # noqa: E402
 from cv_forensics.snsaug_v2_losses import tampered_score_consistency_loss  # noqa: E402
 
 
@@ -43,6 +47,36 @@ def assert_equal(actual, expected, message: str) -> None:
 def temp_root(prefix: str) -> Path:
     TMP_PARENT.mkdir(parents=True, exist_ok=True)
     return Path(tempfile.mkdtemp(prefix=prefix, dir=str(TMP_PARENT)))
+
+
+def write_base_bundle(model_root: Path) -> Path:
+    import torch
+
+    long_path = model_root / "pre_sns_v3_long256.pt"
+    model = build_pre_sns_v3_model(torch, base_channels=2)
+    torch.save(
+        {
+            "model_name": "pre_sns_v3",
+            "image_size": 16,
+            "base_channels": 2,
+            "model_state_dict": model.state_dict(),
+        },
+        long_path,
+    )
+    tile_path = model_root / "tile_placeholder.pt"
+    torch.save({"model_state_dict": {}}, tile_path)
+    bundle = model_root / "bundle.json"
+    bundle.write_text(
+        json.dumps(
+            {
+                "long256_checkpoint_path": str(long_path),
+                "tile_v2_checkpoint_path": str(tile_path),
+                "policy_gated_report": {"mask_threshold": 0.45, "tile_size": 16},
+            }
+        ),
+        encoding="utf-8",
+    )
+    return bundle
 
 
 def write_fixture(root: Path) -> tuple[Path, Path, Path, Path, Path, Path, Path]:
@@ -65,8 +99,7 @@ def write_fixture(root: Path) -> tuple[Path, Path, Path, Path, Path, Path, Path]
     weights = train_root / "snsaug_v2_profile_sampling_weights.json"
     schedule.write_text(json.dumps({"curriculum_schedule": {}}), encoding="utf-8")
     weights.write_text(json.dumps({"profile_sampling_weights": {}}), encoding="utf-8")
-    bundle = model_root / "bundle.json"
-    bundle.write_text(json.dumps({"marker": "fixture"}), encoding="utf-8")
+    bundle = write_base_bundle(model_root)
     clean_val = eval_root / "clean_validation_manifest.jsonl"
     clean_val.write_text(json.dumps({"base_id": "val", "split": "val", "image_path": str(eval_root / "val.png")}) + "\n", encoding="utf-8")
     pair_root = eval_root / "snsaug_v2_0058c_fixed_pairs"
@@ -304,8 +337,21 @@ def test_actual_tiny_training_writes_required_artifacts_and_checkpoints_outside_
     artifact = json.loads(Path(summary["output_paths"]["artifact_manifest"]).read_text(encoding="utf-8"))
     assert_true(artifact["training_started"] is True, "artifact records training_started")
     assert_true(artifact["checkpoint_written"] is True, "artifact records checkpoint_written")
+    assert_equal(artifact["checkpoint_format"], CHECKPOINT_FORMAT, "artifact records real checkpoint format")
+    assert_true(artifact["real_weight_checkpoint"] is True, "artifact records real weight checkpoint")
+    assert_true(len(artifact["best_checkpoint_sha256"]) == 64, "artifact best sha256")
+    assert_true(len(artifact["last_checkpoint_sha256"]) == 64, "artifact last sha256")
     assert_true(Path(artifact["best_checkpoint_path"]).exists(), "artifact best checkpoint exists")
     assert_true(Path(artifact["last_checkpoint_path"]).exists(), "artifact last checkpoint exists")
+    import torch
+
+    best_payload = torch.load(summary["best_checkpoint_path"], map_location="cpu")
+    assert_equal(best_payload["checkpoint_format"], CHECKPOINT_FORMAT, "best checkpoint format")
+    assert_true("model_state_dict" in best_payload, "best checkpoint has model_state_dict")
+    assert_true("optimizer_state_dict" in best_payload, "best checkpoint has optimizer_state_dict")
+    assert_true("trainable_state" not in best_payload, "best checkpoint is not proxy trainable_state")
+    validation = validate_real_weight_checkpoint(summary["best_checkpoint_path"])
+    assert_true(validation["tensor_count"] > 0, "real checkpoint validation passes")
     phase_metrics = json.loads(Path(summary["output_paths"]["per_phase_metrics"]).read_text(encoding="utf-8"))
     assert_equal(len(phase_metrics["phases"]), 3, "three phase metrics")
     for phase in phase_metrics["phases"]:
@@ -321,6 +367,20 @@ def test_actual_tiny_training_writes_required_artifacts_and_checkpoints_outside_
     assert_true("sample_count" in clean_eval, "clean sample count")
     assert_true(sns_eval["eval_subset_only"] is True, "sns eval marked subset")
     assert_true("sample_count" in sns_eval, "sns sample count")
+
+
+def test_validate_real_weight_checkpoint_rejects_proxy_checkpoint() -> None:
+    root = temp_root("cvf_0060c_proxy_")
+    proxy = root / "proxy.pt"
+    import torch
+
+    torch.save({"checkpoint_format": CHECKPOINT_FORMAT, "trainable_state": {"class_bias": [0.1, 0.2, 0.3]}}, proxy)
+    try:
+        validate_real_weight_checkpoint(proxy)
+    except SNSAugV2FullCurriculumFinetuneError as exc:
+        assert_true("model_state_dict" in str(exc) or "trainable_state" in str(exc), "proxy checkpoint rejected")
+    else:
+        raise AssertionError("proxy-only checkpoint must be rejected")
 
 
 def test_plan_schema_contains_phases_and_metrics() -> None:
@@ -343,6 +403,7 @@ def main() -> int:
         test_tampered_score_consistency_skip_reason_when_no_tampered_pairs,
         test_dry_run_starts_no_training_and_lists_outputs,
         test_actual_tiny_training_writes_required_artifacts_and_checkpoints_outside_repo,
+        test_validate_real_weight_checkpoint_rejects_proxy_checkpoint,
         test_plan_schema_contains_phases_and_metrics,
     ]
     for test in tests:
