@@ -153,10 +153,20 @@ def write_fixture(root: Path) -> tuple[Path, Path, Path, Path, Path]:
     ):
         payload = _constant_v3_checkpoint(ckpt_root / f"{path.stem}_source_long.pt", class_bias, tamper_bias)
         payload = {
+            "schema_version": "1.0",
             "marker": "dummy",
+            "checkpoint_format": "snsaug_v2_real_state_dict_v1",
+            "checkpoint_kind": "snsaug_v2_real_model_weights",
             "model_version": "snsaug_aware_multihead_forensics_v1",
             "base_model_bundle_metadata": json.loads(bundle.read_text(encoding="utf-8")),
-            "long256_model_state_dict": payload["model_state_dict"],
+            "model_state_dict": payload["model_state_dict"],
+            "optimizer_state_dict": {},
+            "global_step": 1,
+            "phase": 1,
+            "base_model_bundle_path": str(bundle),
+            "trainable_components": ["class_head", "tamper_localization_head"],
+            "metrics": {},
+            "config_digest": "fixture",
         }
         import torch
         torch.save(payload, path)
@@ -248,6 +258,8 @@ def test_evaluator_outputs_metrics_and_no_training_flags() -> None:
     assert_true(artifact["same_pair_root_for_all_models"] is True, "same pair root recorded")
     fine_infos = [item for item in artifact["model_checkpoint_info"] if item["model_kind"] == "snsaug_finetuned_checkpoint"]
     assert_true(all(item.get("checkpoint_sha256") for item in fine_infos), "fine checkpoints record sha256")
+    assert_true(all(item.get("checkpoint_kind") == "snsaug_v2_real_model_weights" for item in fine_infos), "fine checkpoints record real kind")
+    assert_true(all(int(item.get("tensor_total_numel") or 0) > 1000 for item in fine_infos), "fine checkpoints record real tensor sizes")
     comparison = json.loads(Path(summary["output_paths"]["checkpoint_comparison_summary"]).read_text(encoding="utf-8"))
     names = {item["comparison"] for item in comparison["comparisons"]}
     assert_true("pre_sns_baseline_vs_snsaug_guarded_short_30x3" in names, "baseline vs 30x3 comparison")
@@ -263,6 +275,30 @@ def test_invalid_checkpoint_path_fails() -> None:
     cfg["models"][1]["model_path"] = str(root / "ckpts" / "missing.pt")
     errors = validate_snsaug_v2_checkpoint_comparison_eval_config(cfg, require_exists=True)
     assert_true(any("does not exist" in error for error in errors), "missing checkpoint rejected")
+
+
+def test_trainable_state_only_checkpoint_fails_real_inference() -> None:
+    root = temp_root("cvf_0061_proxy_ckpt_")
+    cfg = safe_config(root)
+    proxy_path = root / "ckpts" / "proxy.pt"
+    import torch
+
+    torch.save(
+        {
+            "marker": "dummy",
+            "checkpoint_format": "snsaug_v2_real_state_dict_v1",
+            "checkpoint_kind": "proxy",
+            "trainable_state": {"class_bias": [0.1, 0.2, 0.3]},
+        },
+        proxy_path,
+    )
+    cfg["models"][1]["model_path"] = str(proxy_path)
+    try:
+        run_snsaug_v2_checkpoint_comparison_eval(cfg)
+    except SNSAugV2CheckpointComparisonEvalError as exc:
+        assert_true("trainable_state proxy" in str(exc) or "proxy values" in str(exc), "proxy-only checkpoint rejected")
+    else:
+        raise AssertionError("trainable_state-only checkpoint must fail real inference")
 
 
 def test_sanity_rejects_all_one_metrics() -> None:
@@ -284,6 +320,7 @@ def main() -> int:
         test_validator_rejects_training_eval_input_and_repo_output,
         test_evaluator_outputs_metrics_and_no_training_flags,
         test_invalid_checkpoint_path_fails,
+        test_trainable_state_only_checkpoint_fails_real_inference,
         test_sanity_rejects_all_one_metrics,
     ]
     for test in tests:

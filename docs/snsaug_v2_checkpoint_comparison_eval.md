@@ -12,6 +12,8 @@ This evaluation compares the frozen pre-SNS bundle and SNSAug fine-tuned checkpo
 
 The evaluator must load the frozen pre-SNS bundle and each SNSAug fine-tuned `.pt` checkpoint before scoring records. Fine-tuned checkpoints must provide real model weights or an explicit derived checkpoint path; `trainable_state` proxy values alone are rejected because they cannot prove real fixed-pair inference.
 
+Preferred 0060b checkpoints use `checkpoint_kind=snsaug_v2_real_model_weights` and contain `model_state_dict` plus optimizer/config metadata. The evaluator records checkpoint SHA-256, byte size, tensor count, and total tensor parameter count for each fine-tuned checkpoint.
+
 Every `model_eval_records.jsonl` row must contain `pred_class`, `p_real`, `p_synthetic`, and `p_tampered`. Metrics are computed from these records only, not from labels, profile names, or synthetic score tables.
 
 The three required model IDs are:
@@ -53,3 +55,7 @@ The config requires `no_training=true`, `no_finetune=true`, `no_network=true`, a
 The evaluator fails the run when comparisons are empty, all model/profile accuracies are exactly `1.0`, all profile metrics are identical across all models, required probability fields are missing, checkpoint hashes are missing for fine-tuned checkpoints, or a fine-tuned checkpoint produces byte-identical predictions to the baseline without an explicit `no_weight_delta` exemption.
 
 It also emits a warning when `non_tampered_high_mask_rate=1.0` appears with `real_fpr=0.0`, because that combination is usually a sign that mask and class metrics are being interpreted inconsistently.
+
+## Troubleshooting
+
+If 0061B says `fine-tuned checkpoint has only trainable_state proxy values`, rerun 0060b after the real checkpoint saving fix. Existing proxy checkpoints are not valid for this evaluator and should not be used for the real fixed-pair comparison.

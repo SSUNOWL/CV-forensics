@@ -346,12 +346,18 @@ def test_actual_tiny_training_writes_required_artifacts_and_checkpoints_outside_
     import torch
 
     best_payload = torch.load(summary["best_checkpoint_path"], map_location="cpu")
+    assert_equal(best_payload["schema_version"], "1.0", "best checkpoint schema version")
     assert_equal(best_payload["checkpoint_format"], CHECKPOINT_FORMAT, "best checkpoint format")
+    assert_equal(best_payload["checkpoint_kind"], "snsaug_v2_real_model_weights", "best checkpoint kind")
+    assert_equal(best_payload["checkpoint_role"], "best", "best checkpoint role")
     assert_true("model_state_dict" in best_payload, "best checkpoint has model_state_dict")
     assert_true("optimizer_state_dict" in best_payload, "best checkpoint has optimizer_state_dict")
+    assert_true("base_model_bundle_path" in best_payload, "best checkpoint records base bundle path")
+    assert_true(len(best_payload["config_digest"]) == 64, "best checkpoint records config digest")
     assert_true("trainable_state" not in best_payload, "best checkpoint is not proxy trainable_state")
     validation = validate_real_weight_checkpoint(summary["best_checkpoint_path"])
     assert_true(validation["tensor_count"] > 0, "real checkpoint validation passes")
+    assert_true(validation["tensor_total_numel"] > 1000, "real checkpoint has enough tensor parameters")
     phase_metrics = json.loads(Path(summary["output_paths"]["per_phase_metrics"]).read_text(encoding="utf-8"))
     assert_equal(len(phase_metrics["phases"]), 3, "three phase metrics")
     for phase in phase_metrics["phases"]:

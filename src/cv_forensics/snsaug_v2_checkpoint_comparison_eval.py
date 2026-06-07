@@ -45,6 +45,7 @@ METRIC_NAMES = [
     "synthetic_to_real_confusion",
     "synthetic_to_tampered_confusion",
 ]
+MIN_REAL_CHECKPOINT_NUMEL = 1000
 
 
 class SNSAugV2CheckpointComparisonEvalError(ValueError):
@@ -281,6 +282,33 @@ def _extract_state(payload: dict[str, Any], names: tuple[str, ...]) -> dict[str,
     return None
 
 
+def _state_tensor_stats(state: dict[str, Any]) -> dict[str, Any]:
+    tensor_count = 0
+    tensor_total_numel = 0
+    tensor_keys: list[str] = []
+    for key, value in state.items():
+        if hasattr(value, "numel"):
+            tensor_count += 1
+            tensor_total_numel += int(value.numel())
+            tensor_keys.append(str(key))
+    return {
+        "tensor_count": tensor_count,
+        "tensor_total_numel": tensor_total_numel,
+        "tensor_keys": tensor_keys[:30],
+    }
+
+
+def _require_real_state_dict(state: dict[str, Any] | None, *, path: Path, label: str) -> dict[str, Any]:
+    if not isinstance(state, dict):
+        raise SNSAugV2CheckpointComparisonEvalError(f"{label} missing real model_state_dict/state_dict: {path}")
+    stats = _state_tensor_stats(state)
+    if int(stats["tensor_count"]) <= 0:
+        raise SNSAugV2CheckpointComparisonEvalError(f"{label} has no tensor weights: {path}")
+    if int(stats["tensor_total_numel"]) <= MIN_REAL_CHECKPOINT_NUMEL:
+        raise SNSAugV2CheckpointComparisonEvalError(f"{label} tensor_total_numel is too small for real inference: {path}")
+    return stats
+
+
 def _state_delta(base_state: dict[str, Any], candidate_state: dict[str, Any]) -> dict[str, Any]:
     torch = _torch_runtime()
     compared = 0
@@ -351,6 +379,7 @@ def _bundle_for_finetuned_checkpoint(
     baseline_long = _torch_load(baseline_long_path)
     if not isinstance(baseline_long, dict) or not isinstance(baseline_long.get("model_state_dict"), dict):
         raise SNSAugV2CheckpointComparisonEvalError("baseline long256 checkpoint missing model_state_dict")
+    _require_real_state_dict(baseline_long.get("model_state_dict"), path=baseline_long_path, label="baseline long256 checkpoint")
     baseline_tile = _torch_load(baseline_tile_path)
 
     no_weight_delta = bool(model.get("no_weight_delta") or payload.get("no_weight_delta"))
@@ -359,7 +388,8 @@ def _bundle_for_finetuned_checkpoint(
     delta: dict[str, Any] = {"long256": None, "tile_v2": None}
 
     if long_state is not None:
-        delta["long256"] = _state_delta(baseline_long["model_state_dict"], long_state)
+        long_stats = _require_real_state_dict(long_state, path=path, label="fine-tuned long256 checkpoint")
+        delta["long256"] = {**_state_delta(baseline_long["model_state_dict"], long_state), **long_stats}
         if not delta["long256"]["has_parameter_delta"] and not no_weight_delta:
             raise SNSAugV2CheckpointComparisonEvalError(f"fine-tuned long256 checkpoint has no parameter delta: {path}")
         derived_long = dict(baseline_long)
@@ -372,7 +402,10 @@ def _bundle_for_finetuned_checkpoint(
             raise SNSAugV2CheckpointComparisonEvalError(f"fine-tuned long256_checkpoint_path does not exist: {long_path}")
         if _sha256(Path(long_path)) == _sha256(baseline_long_path) and not no_weight_delta:
             raise SNSAugV2CheckpointComparisonEvalError(f"fine-tuned long256 checkpoint is byte-identical to baseline: {long_path}")
-        delta["long256"] = {"has_parameter_delta": True, "changed_tensor_count": None, "source": "external_checkpoint"}
+        external_long = _torch_load(Path(long_path))
+        external_state = _extract_state(external_long, ("model_state_dict", "state_dict")) if isinstance(external_long, dict) else None
+        long_stats = _require_real_state_dict(external_state, path=Path(long_path), label="fine-tuned external long256 checkpoint")
+        delta["long256"] = {"has_parameter_delta": True, "changed_tensor_count": None, "source": "external_checkpoint", **long_stats}
     else:
         raise SNSAugV2CheckpointComparisonEvalError(f"fine-tuned checkpoint missing real long256 model weights: {path}")
 
@@ -393,7 +426,16 @@ def _bundle_for_finetuned_checkpoint(
     bundle = dict(payload.get("base_model_bundle_metadata") if isinstance(payload.get("base_model_bundle_metadata"), dict) else baseline_bundle)
     bundle["long256_checkpoint_path"] = long_path
     bundle["tile_v2_checkpoint_path"] = tile_path
-    return bundle, {**_checkpoint_metadata(path), "weight_delta": delta, "no_weight_delta": no_weight_delta}
+    checkpoint_info = {
+        **_checkpoint_metadata(path),
+        "checkpoint_kind": payload.get("checkpoint_kind"),
+        "checkpoint_format": payload.get("checkpoint_format"),
+        "weight_delta": delta,
+        "no_weight_delta": no_weight_delta,
+        "tensor_count": (delta.get("long256") or {}).get("tensor_count"),
+        "tensor_total_numel": (delta.get("long256") or {}).get("tensor_total_numel"),
+    }
+    return bundle, checkpoint_info
 
 
 def _norm_label(value: Any) -> str:

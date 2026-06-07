@@ -74,11 +74,15 @@ checkpoint_format = snsaug_v2_real_state_dict_v1
 
 Required checkpoint fields include:
 
+- `schema_version=1.0`
+- `checkpoint_kind=snsaug_v2_real_model_weights`
 - `model_state_dict`
 - `optimizer_state_dict`
 - `global_step`
 - `phase`
+- `base_model_bundle_path`
 - `config`
+- `config_digest`
 - `metrics`
 - `trainable_components`
 
@@ -106,3 +110,5 @@ For a successful non-dry-run actual branch, `artifact_manifest.json` must includ
 - `real_weight_checkpoint=true`
 
 If 0061B reports `fine-tuned checkpoint has only trainable_state proxy values`, the checkpoint came from an old proxy branch or an invalid writer. Rerun the guarded full-curriculum branch after this fix and verify that `validate_real_weight_checkpoint` passes on both best and last checkpoints.
+
+Existing proxy `.pt` files are not valid real-inference inputs. They should not be relabeled or copied into the new format; a new guarded 0060b run must write fresh `snsaug_v2_real_model_weights` checkpoints with a populated `model_state_dict`.

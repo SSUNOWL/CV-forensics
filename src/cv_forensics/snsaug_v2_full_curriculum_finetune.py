@@ -52,8 +52,9 @@ REQUIRED_OUTPUTS = [
 
 REQUIRED_CHECKPOINTS = ["best_checkpoint", "last_checkpoint"]
 CHECKPOINT_FORMAT = "snsaug_v2_real_state_dict_v1"
+CHECKPOINT_KIND_REAL_WEIGHTS = "snsaug_v2_real_model_weights"
 MIN_REAL_CHECKPOINT_TENSOR_COUNT = 12
-MIN_REAL_CHECKPOINT_NUMEL = 100
+MIN_REAL_CHECKPOINT_NUMEL = 1000
 
 BEST_POLICY = {
     "primary": "snsaug_tampered_recall_plus_valid_iou",
@@ -491,6 +492,11 @@ def _sanitized_config(config: dict[str, Any]) -> dict[str, Any]:
     return _json_safe({key: value for key, value in config.items() if "secret" not in str(key).lower() and ".env" not in str(value).lower()})
 
 
+def _config_digest(config: dict[str, Any]) -> str:
+    text = json.dumps(_sanitized_config(config), ensure_ascii=True, sort_keys=True)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 def _tensor_stats(state: dict[str, Any]) -> dict[str, Any]:
     tensor_count = 0
     tensor_numel = 0
@@ -500,7 +506,22 @@ def _tensor_stats(state: dict[str, Any]) -> dict[str, Any]:
             tensor_count += 1
             tensor_numel += int(value.numel())
             tensor_keys.append(str(key))
-    return {"tensor_count": tensor_count, "tensor_numel": tensor_numel, "tensor_keys": tensor_keys[:30]}
+    return {"tensor_count": tensor_count, "tensor_numel": tensor_numel, "tensor_total_numel": tensor_numel, "tensor_keys": tensor_keys[:30]}
+
+
+def _checkpoint_state(payload: dict[str, Any]) -> dict[str, Any] | None:
+    for key in ("model_state_dict", "state_dict"):
+        value = payload.get(key)
+        if isinstance(value, dict):
+            return value
+    class_head = payload.get("class_head_state_dict")
+    mask_head = payload.get("tamper_localization_head_state_dict")
+    if isinstance(class_head, dict) and isinstance(mask_head, dict):
+        merged: dict[str, Any] = {}
+        merged.update({f"class_head.{key}": value for key, value in class_head.items()})
+        merged.update({f"tamper_localization_head.{key}": value for key, value in mask_head.items()})
+        return merged
+    return None
 
 
 def _changed_trainable_count(state: dict[str, Any], base_state: dict[str, Any] | None, trainable_prefixes: list[str]) -> int | None:
@@ -538,14 +559,16 @@ def validate_real_weight_checkpoint(
         raise SNSAugV2FullCurriculumFinetuneError("checkpoint contains only trainable_state proxy values")
     if payload.get("checkpoint_format") != CHECKPOINT_FORMAT:
         raise SNSAugV2FullCurriculumFinetuneError(f"checkpoint_format must be {CHECKPOINT_FORMAT}")
-    state = payload.get("model_state_dict")
+    state = _checkpoint_state(payload)
     if not isinstance(state, dict):
-        raise SNSAugV2FullCurriculumFinetuneError("model_state_dict is required for real checkpoint")
+        raise SNSAugV2FullCurriculumFinetuneError(
+            "model_state_dict, state_dict, or class_head_state_dict + tamper_localization_head_state_dict is required for real checkpoint"
+        )
     stats = _tensor_stats(state)
     if int(stats["tensor_count"]) < MIN_REAL_CHECKPOINT_TENSOR_COUNT:
         raise SNSAugV2FullCurriculumFinetuneError(f"model_state_dict tensor count is too small: {stats['tensor_count']}")
-    if int(stats["tensor_numel"]) < MIN_REAL_CHECKPOINT_NUMEL:
-        raise SNSAugV2FullCurriculumFinetuneError(f"model_state_dict tensor numel is too small: {stats['tensor_numel']}")
+    if int(stats["tensor_total_numel"]) <= MIN_REAL_CHECKPOINT_NUMEL:
+        raise SNSAugV2FullCurriculumFinetuneError(f"model_state_dict tensor numel is too small: {stats['tensor_total_numel']}")
     changed = _changed_trainable_count(state, base_model_state_dict, trainable_prefixes or ["class_head.", "tamper_binary_head.", "mask_head."])
     if changed == 0:
         raise SNSAugV2FullCurriculumFinetuneError("no trainable parameters changed from the base model")
@@ -812,16 +835,21 @@ def _checkpoint_payload(
     trainable_components: list[str],
     base_bundle: dict[str, Any],
 ) -> dict[str, Any]:
+    sanitized_config = _sanitized_config(config)
     return {
+        "schema_version": "1.0",
         "marker": MARKER,
         "checkpoint_format": CHECKPOINT_FORMAT,
+        "checkpoint_kind": CHECKPOINT_KIND_REAL_WEIGHTS,
         "model_version": MODEL_VERSION,
         "model_state_dict": model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
         "scheduler_state_dict": None,
         "global_step": int(global_step),
         "phase": int(phase),
-        "config": _sanitized_config(config),
+        "base_model_bundle_path": str(config["base_model_bundle_path"]),
+        "config": sanitized_config,
+        "config_digest": _config_digest(config),
         "metrics": metrics,
         "trainable_components": list(trainable_components),
         "base_model_bundle_metadata": _json_safe(base_bundle),
@@ -986,7 +1014,7 @@ def _run_actual_full_curriculum(config: dict[str, Any], output_root: Path, check
             metrics=best_metrics,
             trainable_components=trainable_components,
             base_bundle=base_bundle,
-        ) | {"checkpoint_kind": "best", "best_phase": best["id"]},
+        ) | {"checkpoint_role": "best", "best_phase": best["id"]},
     )
     last_checkpoint_path = _write_checkpoint(
         checkpoint_root / "snsaug_aware_multihead_forensics_v1_last.pt",
@@ -999,7 +1027,7 @@ def _run_actual_full_curriculum(config: dict[str, Any], output_root: Path, check
             metrics=phase_metrics[-1],
             trainable_components=trainable_components,
             base_bundle=base_bundle,
-        ) | {"checkpoint_kind": "last", "total_steps": global_step},
+        ) | {"checkpoint_role": "last", "total_steps": global_step},
     )
     best_validation = validate_real_weight_checkpoint(best_checkpoint_path, base_model_state_dict=base_state, trainable_prefixes=trainable_prefixes)
     last_validation = validate_real_weight_checkpoint(last_checkpoint_path, base_model_state_dict=base_state, trainable_prefixes=trainable_prefixes)
