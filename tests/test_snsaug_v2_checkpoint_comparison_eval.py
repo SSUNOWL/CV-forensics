@@ -22,6 +22,7 @@ from cv_forensics.snsaug_v2_checkpoint_comparison_eval import (  # noqa: E402
     sanity_check_outputs,
     validate_snsaug_v2_checkpoint_comparison_eval_config,
 )
+import cv_forensics.snsaug_v2_checkpoint_comparison_eval as eval_mod  # noqa: E402
 from cv_forensics.pre_sns_v3_model import build_pre_sns_v3_model  # noqa: E402
 from cv_forensics.pre_sns_v3_tile_localizer_v2_model import build_pre_sns_v3_tile_localizer_v2  # noqa: E402
 
@@ -201,6 +202,30 @@ def safe_config(root: Path) -> dict[str, object]:
     }
 
 
+def _join_record(model_id: str, **overrides) -> dict[str, object]:
+    row = {
+        "model_id": model_id,
+        "row_id": None,
+        "record_id": None,
+        "sample_id": None,
+        "base_id": "base_001",
+        "profile": "clean",
+        "view": "clean",
+        "content_label": "tampered",
+        "image_path": f"/tmp/{model_id}/base_001.png",
+        "image_relpath": None,
+        "pred_class": "tampered",
+        "p_real": 0.1,
+        "p_synthetic": 0.2,
+        "p_tampered": 0.7,
+        "localization_activated": True,
+        "valid_iou": 0.5,
+        "raw_iou": 0.5,
+    }
+    row.update(overrides)
+    return row
+
+
 def test_validator_rejects_training_eval_input_and_repo_output() -> None:
     root = temp_root("cvf_0061_guard_")
     cfg = safe_config(root)
@@ -231,6 +256,7 @@ def test_evaluator_outputs_metrics_and_no_training_flags() -> None:
     expected = {
         "model_eval_records",
         "model_eval_comparisons",
+        "comparison_join_diagnostics",
         "per_model_per_profile_metrics",
         "robustness_drop_by_model",
         "checkpoint_comparison_summary",
@@ -265,8 +291,96 @@ def test_evaluator_outputs_metrics_and_no_training_flags() -> None:
     assert_true("pre_sns_baseline_vs_snsaug_guarded_short_30x3" in names, "baseline vs 30x3 comparison")
     assert_true("pre_sns_baseline_vs_snsaug_medium_150x3" in names, "baseline vs 150x3 comparison")
     assert_true("snsaug_guarded_short_30x3_vs_snsaug_medium_150x3" in names, "30x3 vs 150x3 comparison")
+    assert_true(all(item["comparison_count"] > 0 for item in comparison["comparisons"]), "comparison summary not empty")
+    assert_true(all(item["per_profile"] for item in comparison["comparisons"]), "comparison summary has per-profile deltas")
+    comparison_rows = [
+        json.loads(line)
+        for line in Path(summary["output_paths"]["model_eval_comparisons"]).read_text(encoding="utf-8").splitlines()
+    ]
+    assert_true(all("left_model_id" in row and "right_model_id" in row for row in comparison_rows), "comparison rows are cross-model")
+    diagnostics = json.loads(Path(summary["output_paths"]["comparison_join_diagnostics"]).read_text(encoding="utf-8"))
+    assert_equal(diagnostics["record_count"], len(records), "diagnostics record count")
     gallery = json.loads(Path(summary["output_paths"]["visual_gallery_manifest"]).read_text(encoding="utf-8"))
     assert_equal(gallery["model_id"], "snsaug_medium_150x3", "150x3 gallery")
+
+
+def test_matching_row_id_records_produce_comparisons() -> None:
+    records = [
+        _join_record("custom_left", row_id="row-1", pred_class="real", valid_iou=0.1, p_tampered=0.2),
+        _join_record("custom_right", row_id="row-1", pred_class="tampered", valid_iou=0.6, p_tampered=0.8),
+    ]
+    comparisons, join_key_type = eval_mod._build_comparisons(records, [("custom_left", "custom_right")])
+    assert_equal(join_key_type, "row_id", "row_id selected")
+    assert_equal(len(comparisons), 1, "row_id comparison count")
+    assert_equal(comparisons[0]["correct_delta"], 1, "correct delta")
+    assert_equal(round(comparisons[0]["valid_iou_delta"], 4), 0.5, "valid iou delta")
+
+
+def test_matching_composite_records_produce_comparisons() -> None:
+    records = [
+        _join_record("left", image_path="/tmp/left/a.png", pred_class="real"),
+        _join_record("right", image_path="/tmp/right/a.png", pred_class="tampered"),
+    ]
+    comparisons, join_key_type = eval_mod._build_comparisons(records, [("left", "right")])
+    assert_equal(join_key_type, "base_id+profile+view+content_label", "composite selected")
+    assert_equal(len(comparisons), 1, "composite comparison count")
+
+
+def test_custom_model_id_and_explicit_comparison_pairs() -> None:
+    cfg = {"models": [{"model_id": "alpha"}, {"model_id": "beta"}, {"model_id": "gamma"}], "comparison_pairs": [["alpha", "gamma"]]}
+    pairs = eval_mod._comparison_pairs(cfg, ["alpha", "beta", "gamma"])
+    assert_equal(pairs, [("alpha", "gamma")], "explicit pair honored")
+    records = [
+        _join_record("alpha", row_id="shared", pred_class="real"),
+        _join_record("beta", row_id="shared", pred_class="synthetic"),
+        _join_record("gamma", row_id="shared", pred_class="tampered"),
+    ]
+    comparisons, _join_key_type = eval_mod._build_comparisons(records, pairs)
+    assert_equal(len(comparisons), 1, "only explicit pair compared")
+    assert_equal(comparisons[0]["left_model_id"], "alpha", "custom left ID")
+    assert_equal(comparisons[0]["right_model_id"], "gamma", "custom right ID")
+
+
+def test_missing_join_keys_writes_diagnostics_then_fails() -> None:
+    root = temp_root("cvf_0061_diag_")
+    cfg = safe_config(root)
+    original_evaluate = eval_mod._evaluate_model_records
+
+    def fake_evaluate_model_records(*, model, bundle, config, rows, output_root):
+        return [
+            _join_record(
+                model["model_id"],
+                row_id=None,
+                record_id=None,
+                sample_id=None,
+                base_id=f"{model['model_id']}_only",
+                profile="clean",
+                view="clean",
+                content_label="real",
+                image_path=f"/tmp/{model['model_id']}_only.png",
+                image_relpath=f"{model['model_id']}_only.png",
+                pred_class="real",
+            )
+        ]
+
+    eval_mod._evaluate_model_records = fake_evaluate_model_records
+    try:
+        try:
+            run_snsaug_v2_checkpoint_comparison_eval(cfg)
+        except SNSAugV2CheckpointComparisonEvalError as exc:
+            assert_true("comparisons is empty" in str(exc), "empty comparisons rejected")
+        else:
+            raise AssertionError("unjoinable records must fail")
+    finally:
+        eval_mod._evaluate_model_records = original_evaluate
+    output_root = Path(cfg["output_root"])
+    diagnostics_path = output_root / "comparison_join_diagnostics.json"
+    records_path = output_root / "model_eval_records.jsonl"
+    assert_true(diagnostics_path.exists(), "diagnostics written")
+    assert_true(records_path.exists(), "partial records written")
+    diagnostics = json.loads(diagnostics_path.read_text(encoding="utf-8"))
+    assert_equal(diagnostics["record_count"], 3, "diagnostics includes records")
+    assert_true("base_id+profile+view+content_label" in diagnostics["candidate_join_key_stats"], "candidate stats written")
 
 
 def test_invalid_checkpoint_path_fails() -> None:
@@ -319,6 +433,10 @@ def main() -> int:
     tests = [
         test_validator_rejects_training_eval_input_and_repo_output,
         test_evaluator_outputs_metrics_and_no_training_flags,
+        test_matching_row_id_records_produce_comparisons,
+        test_matching_composite_records_produce_comparisons,
+        test_custom_model_id_and_explicit_comparison_pairs,
+        test_missing_join_keys_writes_diagnostics_then_fails,
         test_invalid_checkpoint_path_fails,
         test_trainable_state_only_checkpoint_fails_real_inference,
         test_sanity_rejects_all_one_metrics,

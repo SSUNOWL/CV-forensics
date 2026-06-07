@@ -14,21 +14,39 @@ The evaluator must load the frozen pre-SNS bundle and each SNSAug fine-tuned `.p
 
 Preferred 0060b checkpoints use `checkpoint_kind=snsaug_v2_real_model_weights` and contain `model_state_dict` plus optimizer/config metadata. The evaluator records checkpoint SHA-256, byte size, tensor count, and total tensor parameter count for each fine-tuned checkpoint.
 
-Every `model_eval_records.jsonl` row must contain `pred_class`, `p_real`, `p_synthetic`, and `p_tampered`. Metrics are computed from these records only, not from labels, profile names, or synthetic score tables.
+Every `model_eval_records.jsonl` row must contain `model_id`, sample identifiers when available (`row_id`, `record_id`, `sample_id`), `base_id`, `profile`, `view`, `content_label`, `image_path`, `pred_class`, `p_real`, `p_synthetic`, `p_tampered`, `localization_activated`, and tampered localization fields (`valid_iou`/`tampered_valid_iou`, `raw_iou`) where applicable. Metrics and comparisons are computed from these records only, not from labels, profile names, or synthetic score tables.
 
-The three required model IDs are:
+Model IDs are not fixed. The historical IDs remain valid examples:
 
 - `pre_sns_baseline`
 - `snsaug_guarded_short_30x3`
 - `snsaug_medium_150x3`
 
-`checkpoint_comparison_summary.json` must include:
+If `comparison_pairs` is present in the config, the evaluator compares those explicit model pairs. Otherwise it compares all pairwise combinations of `config["models"]`.
 
-- `pre_sns_baseline_vs_snsaug_guarded_short_30x3`
-- `pre_sns_baseline_vs_snsaug_medium_150x3`
-- `snsaug_guarded_short_30x3_vs_snsaug_medium_150x3`
+## Comparison Join Keys
+
+`model_eval_comparisons.jsonl` is built by joining records across models, not by matching hard-coded model IDs. The evaluator tries these keys in order and uses the first key that creates at least one joinable group for the configured comparison pairs:
+
+- `row_id`
+- `record_id`
+- `sample_id`
+- `base_id + profile + view + content_label`
+- `base_id + profile + content_label`
+- `image_path`
+- `image_relpath`
+
+Each comparison row includes the left/right model IDs, `join_key_type`, `join_key`, sample metadata, left/right predictions, correctness delta, tampered probability delta, and valid-IoU delta.
+
+`checkpoint_comparison_summary.json` must contain non-empty `comparisons`. Each entry includes `comparison_id`, left/right model IDs, `comparison_count`, and per-profile deltas for accuracy, tampered recall, localization activation recall, valid IoU, real false-positive rate, and synthetic recall.
 
 If `comparisons=[]`, the run is invalid even when the script exits successfully.
+
+## Join Diagnostics
+
+The evaluator writes `comparison_join_diagnostics.json` with record counts, per-model record counts, available record keys, configured model IDs, comparison pairs, and candidate join-key stats. Candidate stats include group count, missing records, pair-joinable group counts, and full-model group counts.
+
+When comparisons are empty, the evaluator writes `comparison_join_diagnostics.json`, `model_eval_records.jsonl`, and `model_eval_comparisons.jsonl` before failing. This is the expected failure mode for unjoinable records.
 
 ## Outputs
 
@@ -36,6 +54,7 @@ The external output root contains:
 
 - `model_eval_records.jsonl`
 - `model_eval_comparisons.jsonl`
+- `comparison_join_diagnostics.json`
 - `per_model_per_profile_metrics.json`
 - `robustness_drop_by_model.json`
 - `checkpoint_comparison_summary.json`

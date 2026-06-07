@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import hashlib
 import warnings
+from itertools import combinations
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,7 @@ CLASS_LABELS = ("real", "synthetic", "tampered")
 REQUIRED_OUTPUTS = [
     "model_eval_records.jsonl",
     "model_eval_comparisons.jsonl",
+    "comparison_join_diagnostics.json",
     "per_model_per_profile_metrics.json",
     "robustness_drop_by_model.json",
     "checkpoint_comparison_summary.json",
@@ -46,6 +48,15 @@ METRIC_NAMES = [
     "synthetic_to_tampered_confusion",
 ]
 MIN_REAL_CHECKPOINT_NUMEL = 1000
+JOIN_KEY_CANDIDATES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("row_id", ("row_id",)),
+    ("record_id", ("record_id",)),
+    ("sample_id", ("sample_id",)),
+    ("base_id+profile+view+content_label", ("base_id", "profile", "view", "content_label")),
+    ("base_id+profile+content_label", ("base_id", "profile", "content_label")),
+    ("image_path", ("image_path",)),
+    ("image_relpath", ("image_relpath",)),
+)
 
 
 class SNSAugV2CheckpointComparisonEvalError(ValueError):
@@ -487,37 +498,181 @@ def _metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def _build_comparisons(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    by_model_base: dict[tuple[str, str], dict[str, dict[str, Any]]] = {}
+def _comparison_pairs(config: dict[str, Any], model_ids: list[str]) -> list[tuple[str, str]]:
+    raw_pairs = config.get("comparison_pairs")
+    pairs: list[tuple[str, str]] = []
+    if raw_pairs is None:
+        return [(left, right) for left, right in combinations(model_ids, 2)]
+    if not isinstance(raw_pairs, list):
+        raise SNSAugV2CheckpointComparisonEvalError("comparison_pairs must be a list when provided")
+    for index, item in enumerate(raw_pairs):
+        left: Any = None
+        right: Any = None
+        if isinstance(item, dict):
+            left = item.get("left_model_id") or item.get("left")
+            right = item.get("right_model_id") or item.get("right")
+        elif isinstance(item, (list, tuple)) and len(item) == 2:
+            left, right = item
+        if not left or not right:
+            raise SNSAugV2CheckpointComparisonEvalError(f"comparison_pairs[{index}] must define left and right model IDs")
+        pair = (str(left), str(right))
+        if pair[0] not in model_ids or pair[1] not in model_ids:
+            raise SNSAugV2CheckpointComparisonEvalError(f"comparison_pairs[{index}] references an unknown model ID")
+        if pair[0] == pair[1]:
+            raise SNSAugV2CheckpointComparisonEvalError(f"comparison_pairs[{index}] must compare two different models")
+        if pair not in pairs:
+            pairs.append(pair)
+    return pairs
+
+
+def _join_key_value(record: dict[str, Any], fields: tuple[str, ...]) -> str | None:
+    values: list[str] = []
+    for field in fields:
+        value = record.get(field)
+        if value is None or str(value).strip() == "":
+            return None
+        values.append(str(value))
+    return "||".join(values)
+
+
+def _group_records_by_join_key(records: list[dict[str, Any]], fields: tuple[str, ...]) -> tuple[dict[str, dict[str, dict[str, Any]]], int]:
+    groups: dict[str, dict[str, dict[str, Any]]] = {}
+    missing = 0
     for record in records:
-        key = (record["model_id"], record["base_id"])
-        by_model_base.setdefault(key, {})[record["profile"]] = record
-    comparisons: list[dict[str, Any]] = []
-    for (model_id, base_id), profiles in by_model_base.items():
-        clean = profiles.get("clean")
-        if clean is None:
+        key = _join_key_value(record, fields)
+        if key is None:
+            missing += 1
             continue
-        for profile, sns in profiles.items():
-            if profile == "clean":
+        model_id = str(record.get("model_id") or "")
+        groups.setdefault(key, {}).setdefault(model_id, record)
+    return groups, missing
+
+
+def _candidate_join_key_stats(
+    records: list[dict[str, Any]],
+    model_ids: list[str],
+    pairs: list[tuple[str, str]],
+) -> dict[str, dict[str, Any]]:
+    stats: dict[str, dict[str, Any]] = {}
+    all_models = set(model_ids)
+    for key_type, fields in JOIN_KEY_CANDIDATES:
+        groups, missing = _group_records_by_join_key(records, fields)
+        pair_counts = {
+            f"{left}_vs_{right}": sum(1 for model_records in groups.values() if left in model_records and right in model_records)
+            for left, right in pairs
+        }
+        stats[key_type] = {
+            "group_count": len(groups),
+            "missing_records": missing,
+            "pair_joinable_groups": pair_counts,
+            "full_model_groups": sum(1 for model_records in groups.values() if all_models.issubset(set(model_records))),
+        }
+    return stats
+
+
+def _available_record_keys(records: list[dict[str, Any]]) -> list[str]:
+    keys: set[str] = set()
+    for record in records:
+        for key, value in record.items():
+            if value is not None and str(value).strip() != "":
+                keys.add(str(key))
+    return sorted(keys)
+
+
+def _comparison_join_diagnostics(
+    *,
+    records: list[dict[str, Any]],
+    model_ids: list[str],
+    pairs: list[tuple[str, str]],
+) -> dict[str, Any]:
+    counts: dict[str, int] = {model_id: 0 for model_id in model_ids}
+    for record in records:
+        model_id = str(record.get("model_id") or "")
+        counts[model_id] = counts.get(model_id, 0) + 1
+    return {
+        "marker": MARKER,
+        "record_count": len(records),
+        "record_count_per_model": counts,
+        "available_record_keys": _available_record_keys(records),
+        "candidate_join_key_stats": _candidate_join_key_stats(records, model_ids, pairs),
+        "configured_model_ids": model_ids,
+        "comparison_pairs": [{"left_model_id": left, "right_model_id": right} for left, right in pairs],
+    }
+
+
+def _correct(record: dict[str, Any]) -> bool:
+    return _norm_label(record.get("content_label")) == _norm_label(record.get("pred_class"))
+
+
+def _float_or_none(value: Any) -> float | None:
+    return float(value) if value is not None else None
+
+
+def _delta(right: Any, left: Any) -> float | None:
+    if right is None or left is None:
+        return None
+    return float(right) - float(left)
+
+
+def _select_join_key(
+    records: list[dict[str, Any]],
+    pairs: list[tuple[str, str]],
+) -> tuple[str | None, tuple[str, ...] | None, dict[str, dict[str, Any]]]:
+    model_ids = sorted({str(record.get("model_id") or "") for record in records if record.get("model_id")})
+    stats = _candidate_join_key_stats(records, model_ids, pairs)
+    for key_type, fields in JOIN_KEY_CANDIDATES:
+        pair_counts = stats[key_type]["pair_joinable_groups"]
+        if any(int(count) > 0 for count in pair_counts.values()):
+            return key_type, fields, stats
+    return None, None, stats
+
+
+def _build_comparisons(
+    records: list[dict[str, Any]],
+    pairs: list[tuple[str, str]],
+) -> tuple[list[dict[str, Any]], str | None]:
+    join_key_type, fields, _stats = _select_join_key(records, pairs)
+    if join_key_type is None or fields is None:
+        return [], None
+    groups, _missing = _group_records_by_join_key(records, fields)
+    comparisons: list[dict[str, Any]] = []
+    for join_key, model_records in sorted(groups.items()):
+        for left_model_id, right_model_id in pairs:
+            left = model_records.get(left_model_id)
+            right = model_records.get(right_model_id)
+            if left is None or right is None:
                 continue
+            left_correct = _correct(left)
+            right_correct = _correct(right)
+            left_iou = _float_or_none(left.get("valid_iou"))
+            right_iou = _float_or_none(right.get("valid_iou"))
+            left_p_tampered = _float_or_none(left.get("p_tampered"))
+            right_p_tampered = _float_or_none(right.get("p_tampered"))
             comparisons.append(
                 {
-                    "model_id": model_id,
-                    "base_id": base_id,
-                    "profile": profile,
-                    "content_label": sns["content_label"],
-                    "clean_pred_class": clean["pred_class"],
-                    "sns_pred_class": sns["pred_class"],
-                    "clean_p_tampered": clean["p_tampered"],
-                    "sns_p_tampered": sns["p_tampered"],
-                    "valid_iou_drop": (
-                        float(clean["valid_iou"]) - float(sns["valid_iou"])
-                        if clean.get("valid_iou") is not None and sns.get("valid_iou") is not None
-                        else None
-                    ),
+                    "comparison_id": f"{left_model_id}_vs_{right_model_id}",
+                    "left_model_id": left_model_id,
+                    "right_model_id": right_model_id,
+                    "join_key_type": join_key_type,
+                    "join_key": join_key,
+                    "base_id": right.get("base_id") or left.get("base_id"),
+                    "profile": right.get("profile") or left.get("profile"),
+                    "view": right.get("view") or left.get("view"),
+                    "content_label": right.get("content_label") or left.get("content_label"),
+                    "left_pred_class": left.get("pred_class"),
+                    "right_pred_class": right.get("pred_class"),
+                    "left_correct": left_correct,
+                    "right_correct": right_correct,
+                    "correct_delta": int(right_correct) - int(left_correct),
+                    "left_p_tampered": left_p_tampered,
+                    "right_p_tampered": right_p_tampered,
+                    "p_tampered_delta": _delta(right_p_tampered, left_p_tampered),
+                    "left_valid_iou": left_iou,
+                    "right_valid_iou": right_iou,
+                    "valid_iou_delta": _delta(right_iou, left_iou),
                 }
             )
-    return comparisons
+    return comparisons, join_key_type
 
 
 def _per_profile(records: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -543,38 +698,57 @@ def _drop_by_model(per_profile: dict[str, dict[str, Any]]) -> dict[str, Any]:
     return out
 
 
-def _comparison_summary(per_profile: dict[str, dict[str, Any]], model_ids: list[str]) -> dict[str, Any]:
-    pairs = []
-    desired_pairs = (
-        ("pre_sns_baseline", "snsaug_guarded_short_30x3"),
-        ("pre_sns_baseline", "snsaug_medium_150x3"),
-        ("snsaug_guarded_short_30x3", "snsaug_medium_150x3"),
-        ("baseline", "snsaug_30x3"),
-        ("baseline", "snsaug_150x3"),
-        ("snsaug_30x3", "snsaug_150x3"),
-    )
-    seen: set[tuple[str, str]] = set()
-    for left, right in desired_pairs:
-        if left not in model_ids or right not in model_ids:
-            continue
-        if (left, right) in seen:
-            continue
-        seen.add((left, right))
-        left_clean = per_profile.get(left, {}).get("clean", {})
-        right_clean = per_profile.get(right, {}).get("clean", {})
-        left_sns = _mean([float(metrics.get("tampered_valid_mean_iou", 0.0) or 0.0) for profile, metrics in per_profile.get(left, {}).items() if profile != "clean"])
-        right_sns = _mean([float(metrics.get("tampered_valid_mean_iou", 0.0) or 0.0) for profile, metrics in per_profile.get(right, {}).items() if profile != "clean"])
-        pairs.append(
+def _comparison_summary(
+    records: list[dict[str, Any]],
+    comparisons: list[dict[str, Any]],
+    pairs: list[tuple[str, str]],
+) -> dict[str, Any]:
+    records_by_model_key: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for record in records:
+        model_id = str(record.get("model_id") or "")
+        for key_type, fields in JOIN_KEY_CANDIDATES:
+            key = _join_key_value(record, fields)
+            if key is not None:
+                records_by_model_key.setdefault((model_id, key_type, key), record)
+
+    summary_rows: list[dict[str, Any]] = []
+    for left, right in pairs:
+        pair_comparisons = [row for row in comparisons if row["left_model_id"] == left and row["right_model_id"] == right]
+        profiles = sorted({str(row.get("profile") or "unknown") for row in pair_comparisons})
+        per_profile: dict[str, dict[str, Any]] = {}
+        for profile in profiles:
+            scoped = [row for row in pair_comparisons if str(row.get("profile") or "unknown") == profile]
+            left_records: list[dict[str, Any]] = []
+            right_records: list[dict[str, Any]] = []
+            for row in scoped:
+                left_record = records_by_model_key.get((left, row["join_key_type"], row["join_key"]))
+                right_record = records_by_model_key.get((right, row["join_key_type"], row["join_key"]))
+                if left_record is not None and right_record is not None:
+                    left_records.append(left_record)
+                    right_records.append(right_record)
+            left_metrics = _metrics(left_records)
+            right_metrics = _metrics(right_records)
+            per_profile[profile] = {
+                "accuracy_delta": right_metrics["accuracy"] - left_metrics["accuracy"],
+                "tampered_recall_delta": right_metrics["tampered_recall"] - left_metrics["tampered_recall"],
+                "localization_activation_recall_delta": (
+                    right_metrics["localization_activation_recall"] - left_metrics["localization_activation_recall"]
+                ),
+                "valid_iou_delta": right_metrics["tampered_valid_mean_iou"] - left_metrics["tampered_valid_mean_iou"],
+                "real_fpr_delta": right_metrics["real_fpr"] - left_metrics["real_fpr"],
+                "synthetic_recall_delta": right_metrics["synthetic_recall"] - left_metrics["synthetic_recall"],
+            }
+        summary_rows.append(
             {
+                "comparison_id": f"{left}_vs_{right}",
                 "comparison": f"{left}_vs_{right}",
                 "left_model_id": left,
                 "right_model_id": right,
-                "clean_macro_f1_delta": right_clean.get("macro_f1", 0.0) - left_clean.get("macro_f1", 0.0),
-                "clean_accuracy_delta": right_clean.get("accuracy", 0.0) - left_clean.get("accuracy", 0.0),
-                "snsaug_tampered_valid_mean_iou_delta": (right_sns or 0.0) - (left_sns or 0.0),
+                "comparison_count": len(pair_comparisons),
+                "per_profile": per_profile,
             }
         )
-    return {"marker": MARKER, "comparisons": pairs}
+    return {"marker": MARKER, "comparisons": [row for row in summary_rows if row["comparison_count"] > 0]}
 
 
 def _profiles_from_rows(rows: list[dict[str, Any]]) -> list[str]:
@@ -608,6 +782,9 @@ def _normalize_record(row: dict[str, Any], model: dict[str, Any]) -> dict[str, A
         "marker": MARKER,
         "model_id": model["model_id"],
         "model_kind": model["model_kind"],
+        "row_id": row.get("row_id"),
+        "record_id": row.get("record_id"),
+        "sample_id": row.get("sample_id"),
         "base_id": str(row.get("base_id") or ""),
         "profile": str(row.get("profile") or ("clean" if str(row.get("view") or "") == "clean" else "unknown")),
         "view": str(row.get("view") or ""),
@@ -620,10 +797,12 @@ def _normalize_record(row: dict[str, Any], model: dict[str, Any]) -> dict[str, A
         "pred_mask_area_pct": float(row.get("final_mask_area_pct") or 0.0),
         "gt_mask_area_pct": _mask_area_pct(row.get("tamper_mask_path")),
         "valid_iou": valid_iou,
+        "tampered_valid_iou": valid_iou,
         "raw_iou": raw_iou,
         "ignore_mask_path": row.get("ignore_mask_path"),
         "tamper_mask_path": row.get("tamper_mask_path"),
         "image_path": row.get("image_path"),
+        "image_relpath": row.get("image_relpath"),
         "pred_mask_path": row.get("pred_mask_path"),
         "pred_red_overlay_path": row.get("pred_red_overlay_path"),
         "gt_red_overlay_path": row.get("gt_red_overlay_path"),
@@ -651,6 +830,16 @@ def _evaluate_model_records(
         "mask_threshold": float(config.get("mask_threshold", 0.45)),
     }
     raw_records = fixed_pair_evaluate_rows(bundle, fixed_config, rows)
+    pair_root = _real(config["pair_root"])
+    for raw_record, source_row in zip(raw_records, rows):
+        for field in ("row_id", "record_id", "sample_id", "image_relpath"):
+            if raw_record.get(field) is None and source_row.get(field) is not None:
+                raw_record[field] = source_row.get(field)
+        if raw_record.get("image_relpath") is None and raw_record.get("image_path"):
+            try:
+                raw_record["image_relpath"] = str(_real(raw_record["image_path"]).relative_to(pair_root))
+            except ValueError:
+                pass
     records = [_normalize_record(row, model) for row in raw_records]
     if any(record.get("p_tampered") is None for record in records):
         raise SNSAugV2CheckpointComparisonEvalError(f"model {model['model_id']} produced records without p_tampered")
@@ -689,6 +878,8 @@ def sanity_check_outputs(
     summary: dict[str, Any],
     model_infos: list[dict[str, Any]],
 ) -> list[str]:
+    if not records:
+        raise SNSAugV2CheckpointComparisonEvalError("checkpoint comparison sanity failed: model_eval_records is empty")
     if not summary.get("comparisons"):
         raise SNSAugV2CheckpointComparisonEvalError("checkpoint comparison sanity failed: comparisons is empty")
     if records and any("p_tampered" not in row for row in records):
@@ -769,11 +960,20 @@ def run_snsaug_v2_checkpoint_comparison_eval(config: dict[str, Any]) -> dict[str
                 output_root=output_root,
             )
         )
-    comparisons = _build_comparisons(records)
+    model_ids = [model["model_id"] for model in config["models"]]
+    pairs = _comparison_pairs(config, model_ids)
+    comparisons, join_key_type = _build_comparisons(records, pairs)
+    diagnostics = _comparison_join_diagnostics(records=records, model_ids=model_ids, pairs=pairs)
     per_profile = _per_profile(records)
     drop = _drop_by_model(per_profile)
-    model_ids = [model["model_id"] for model in config["models"]]
-    summary = _comparison_summary(per_profile, model_ids)
+    summary = _comparison_summary(records, comparisons, pairs)
+    if not records or not comparisons:
+        _write_jsonl(output_root / "model_eval_records.jsonl", records)
+        _write_jsonl(output_root / "model_eval_comparisons.jsonl", comparisons)
+        _write_json(output_root / "comparison_join_diagnostics.json", diagnostics)
+        if not records:
+            raise SNSAugV2CheckpointComparisonEvalError("checkpoint comparison sanity failed: model_eval_records is empty")
+        raise SNSAugV2CheckpointComparisonEvalError("checkpoint comparison sanity failed: comparisons is empty")
     sanity_warnings = sanity_check_outputs(records=records, per_profile=per_profile, summary=summary, model_infos=model_infos)
     subset = bool(config.get("eval_subset_only", False))
     full_ran = not subset
@@ -793,6 +993,7 @@ def run_snsaug_v2_checkpoint_comparison_eval(config: dict[str, Any]) -> dict[str
     output_paths = {
         "model_eval_records": _write_jsonl(output_root / "model_eval_records.jsonl", records),
         "model_eval_comparisons": _write_jsonl(output_root / "model_eval_comparisons.jsonl", comparisons),
+        "comparison_join_diagnostics": _write_json(output_root / "comparison_join_diagnostics.json", diagnostics),
         "per_model_per_profile_metrics": _write_json(output_root / "per_model_per_profile_metrics.json", {"marker": MARKER, "metrics": per_profile}),
         "robustness_drop_by_model": _write_json(output_root / "robustness_drop_by_model.json", {"marker": MARKER, "drops": drop}),
         "checkpoint_comparison_summary": _write_json(
@@ -819,6 +1020,8 @@ def run_snsaug_v2_checkpoint_comparison_eval(config: dict[str, Any]) -> dict[str
         "model_ids": model_ids,
         "model_checkpoint_info": model_infos,
         "same_pair_root_for_all_models": True,
+        "comparison_pairs": [{"left_model_id": left, "right_model_id": right} for left, right in pairs],
+        "comparison_join_key_type": join_key_type,
         "full_fixed_pair_evaluation_ran": full_ran,
         "eval_subset_only": subset,
         "sanity_warnings": sanity_warnings,
