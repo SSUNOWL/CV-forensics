@@ -33,6 +33,7 @@ from cv_forensics.snsaug_v2_losses import (  # noqa: E402
     non_tampered_tampered_suppression_loss,
     tampered_score_consistency_loss,
 )
+from cv_forensics.pre_sns_v3_model import build_pre_sns_v3_model  # noqa: E402
 
 
 def assert_true(value: bool, message: str) -> None:
@@ -69,8 +70,21 @@ def write_fixture(root: Path) -> tuple[Path, Path, Path, Path, Path, Path]:
     weights = train_root / "snsaug_v2_profile_sampling_weights.json"
     schedule.write_text(json.dumps({"curriculum_schedule": {}}), encoding="utf-8")
     weights.write_text(json.dumps({"profile_sampling_weights": {}}), encoding="utf-8")
+    import torch
+
+    long_path = model_root / "long.pt"
+    model = build_pre_sns_v3_model(torch, base_channels=2)
+    torch.save(
+        {
+            "model_name": "pre_sns_v3",
+            "image_size": 16,
+            "base_channels": 2,
+            "model_state_dict": model.state_dict(),
+        },
+        long_path,
+    )
     bundle = model_root / "bundle.json"
-    bundle.write_text(json.dumps({"long256_checkpoint_path": str(model_root / "long.pt")}), encoding="utf-8")
+    bundle.write_text(json.dumps({"long256_checkpoint_path": str(long_path)}), encoding="utf-8")
     clean_val = eval_root / "clean_validation_manifest.jsonl"
     clean_val.write_text(json.dumps({"base_id": "val", "split": "val", "image_path": str(eval_root / "val.png")}) + "\n", encoding="utf-8")
     pair_root = eval_root / "snsaug_v2_0058c_fixed_pairs"
@@ -108,6 +122,11 @@ def safe_config(root: Path) -> dict[str, object]:
         "hard_negative_sampling": {"enabled": True, "non_tampered_sns_to_tampered_sns_ratio": [2, 1]},
         "enable_real_training": False,
         "write_checkpoints": False,
+        "max_steps_per_phase": 1,
+        "phase_1_max_steps": 1,
+        "phase_2_max_steps": 1,
+        "phase_3_max_steps": 1,
+        "device": "cpu",
         "no_network": True,
         "no_download": True,
     }
@@ -216,6 +235,19 @@ def test_output_checkpoint_and_approval_guardrails() -> None:
     assert_true(any(APPROVAL_TEXT in error for error in errors), "real training approval required")
 
 
+def test_real_run_without_approval_fails_before_writes() -> None:
+    root = temp_root("cvf_0063b_noapproval_")
+    cfg = safe_config(root)
+    try:
+        run_snsaug_v2_balanced_hard_negative_finetune(cfg, dry_run=False)
+    except Exception as exc:
+        assert_true(APPROVAL_TEXT in str(exc), "approval error")
+    else:
+        raise AssertionError("real run without approval must fail")
+    assert_true(not Path(cfg["output_root"]).exists(), "output root not created without approval")
+    assert_true(not Path(cfg["checkpoint_root"]).exists(), "checkpoint root not created without approval")
+
+
 def test_dry_run_starts_no_training_and_lists_required_outputs() -> None:
     before = set(os.listdir(REPO_ROOT))
     root = temp_root("cvf_0063_dry_")
@@ -229,6 +261,67 @@ def test_dry_run_starts_no_training_and_lists_required_outputs() -> None:
     for key in ("training_log", "loss_breakdown", "threshold_sweep_after_training", "best_checkpoint", "last_checkpoint"):
         assert_true(key in summary["planned_output_paths"], f"{key} planned")
     assert_true(not Path(cfg["checkpoint_root"]).exists(), "checkpoint root not created")
+
+
+def test_real_run_with_approval_writes_logs_and_checkpoints() -> None:
+    root = temp_root("cvf_0063b_real_")
+    cfg = safe_config(root)
+    cfg["approval_text"] = APPROVAL_TEXT
+    summary = run_snsaug_v2_balanced_hard_negative_finetune(cfg, dry_run=False)
+    assert_true(summary["training_started"] is True, "training started")
+    assert_true(summary["checkpoint_written"] is True, "checkpoint written")
+    paths = summary["output_paths"]
+    expected = {
+        "training_log",
+        "loss_breakdown",
+        "per_phase_metrics",
+        "clean_validation_metrics",
+        "snsaug_0058c_metrics",
+        "threshold_sweep_after_training",
+        "report_markdown",
+        "best_checkpoint",
+        "last_checkpoint",
+        "artifact_manifest",
+    }
+    assert_equal(set(paths), expected, "all output paths")
+    for path in paths.values():
+        path_obj = Path(path)
+        assert_true(path_obj.exists(), f"{path} exists")
+        assert_true(not str(path_obj).startswith(str(REPO_ROOT)), "output outside repo")
+    rows = [json.loads(line) for line in Path(paths["training_log"]).read_text(encoding="utf-8").splitlines()]
+    assert_true(rows, "training log rows")
+    for key in (
+        "phase",
+        "step",
+        "total_loss",
+        "class_loss",
+        "hardneg_loss",
+        "tampered_score_consistency_loss",
+        "clean_sns_class_consistency_loss",
+        "mask_loss",
+        "mean_p_tampered_real_sns",
+        "mean_p_tampered_synthetic_sns",
+        "mean_p_tampered_tampered_sns",
+    ):
+        assert_true(key in rows[0], f"{key} in training log")
+    assert_true(all(float(row["total_loss"]) >= 0.0 for row in rows), "loss values finite")
+
+    import torch
+
+    for key in ("best_checkpoint", "last_checkpoint"):
+        payload = torch.load(paths[key], map_location="cpu")
+        assert_true("model_state_dict" in payload, f"{key} has model_state_dict")
+        assert_equal(payload["checkpoint_kind"], "snsaug_v2_balanced_hard_negative_real_model_weights", f"{key} kind")
+        assert_equal(payload["model_version"], "snsaug_aware_multihead_forensics_v1", f"{key} version")
+        assert_true("optimizer_state_dict" in payload, f"{key} has optimizer state")
+        assert_true("config_digest" in payload and len(payload["config_digest"]) == 64, f"{key} config digest")
+        assert_true(int(payload["global_step"]) >= 1, f"{key} global step")
+        assert_true("metrics" in payload, f"{key} metrics")
+    artifact = json.loads(Path(paths["artifact_manifest"]).read_text(encoding="utf-8"))
+    assert_true(
+        artifact["best_checkpoint_selected_by"] in {"balanced_score_guardrail_pass", "fallback_last_no_guardrail_pass"},
+        "best selection recorded",
+    )
 
 
 def test_balanced_score_and_guardrails() -> None:
@@ -285,7 +378,9 @@ def main() -> int:
         test_sampling_plan_targets_two_to_one,
         test_config_guardrails_reject_leakage_and_flags,
         test_output_checkpoint_and_approval_guardrails,
+        test_real_run_without_approval_fails_before_writes,
         test_dry_run_starts_no_training_and_lists_required_outputs,
+        test_real_run_with_approval_writes_logs_and_checkpoints,
         test_balanced_score_and_guardrails,
         test_real_checkpoint_payload_validation,
         test_docs_marker_present,

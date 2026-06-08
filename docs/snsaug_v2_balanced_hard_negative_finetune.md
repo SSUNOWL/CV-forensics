@@ -8,6 +8,8 @@ The 0061 real checkpoint comparison path showed that the 30x3 realweights checkp
 
 The corrective run must train against the failure directly: suppress `p_tampered` on real and synthetic SNSAug samples while keeping tampered activation recovery for actual tampered samples.
 
+0063 originally added the config, dry-run planner, guardrails, loss helpers, and tests, but deliberately did not enter the real training branch. 0063b adds the guarded actual branch: when the exact approval text is present, the runner loads the pre-SNS v3 bundle, trains the configured small phase schedule, writes external artifacts, and saves real-weight checkpoints.
+
 ## Losses
 
 The new hard-negative term is:
@@ -81,10 +83,22 @@ Approved real runs must write only to configured external roots:
 - `best/` real `.pt` checkpoint
 - last real `.pt` checkpoint
 
-Checkpoint payloads must contain real `model_state_dict` values. Proxy-only `trainable_state` checkpoints are invalid.
+Checkpoint payloads must contain real `model_state_dict` values. Proxy-only `trainable_state` checkpoints are invalid. Balanced hard-negative checkpoints use:
+
+```text
+checkpoint_kind = snsaug_v2_balanced_hard_negative_real_model_weights
+```
+
+They also record `model_version`, `global_step`, `phase`, `metrics`, `optimizer_state_dict`, and `config_digest`.
 
 ## Guardrails
 
-The CLI supports `--dry-run`, which validates the config and prints the plan without training or writing checkpoints. Real training and checkpoint writing require explicit real-run approval and must not happen during implementation validation.
+The CLI supports `--dry-run`, which validates the config and prints the plan without training or writing checkpoints. Real training and checkpoint writing require:
+
+```text
+approval_text = I_APPROVE_SNSAUG_V2_BALANCED_HARD_NEGATIVE_FINETUNE
+```
+
+Without that exact text, non-dry-run execution fails before creating output or checkpoint roots.
 
 The config requires `no_network=true`, `no_download=true`, `no_training_from_scratch=true`, external output/checkpoint roots, train-only manifests, and approved evaluation roots used only for validation/evaluation.

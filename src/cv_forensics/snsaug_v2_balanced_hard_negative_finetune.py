@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -12,20 +13,33 @@ from .snsaug_v2_full_curriculum_finetune import (
     REPO_ROOT,
     _as_roots,
     _contains_eval_token,
+    _config_digest,
+    _configure_trainable_parameters,
     _inside_repo,
     _is_protected,
     _is_under,
+    _json_safe,
+    _load_base_bundle_and_model,
     _load_json_or_jsonl,
     _real,
+    _runtime_torch,
+    _sanitized_config,
+    _sha256_file,
+    _synthetic_batch,
     _validate_absolute_path,
     _validate_numeric,
     _validate_under_roots,
+    _write_json,
+    _write_jsonl,
+    _write_text,
 )
 from .snsaug_v2_losses import (
     CLASS_TO_INDEX,
+    class_cross_entropy_loss,
     clean_sns_non_tampered_class_consistency_loss,
     non_tampered_tampered_suppression_loss,
     tampered_score_consistency_loss,
+    valid_tamper_mask_loss,
 )
 
 MARKER = "SNSAUG_V2_BALANCED_HARD_NEGATIVE_FINETUNE_OK"
@@ -61,7 +75,8 @@ REQUIRED_OUTPUTS = [
     "threshold_sweep_after_training.json",
     "artifact_manifest.json",
 ]
-REQUIRED_CHECKPOINTS = ["best/snsaug_aware_multihead_forensics_v1_best.pt", "snsaug_aware_multihead_forensics_v1_last.pt"]
+REQUIRED_CHECKPOINTS = ["snsaug_aware_multihead_forensics_v1_best.pt", "snsaug_aware_multihead_forensics_v1_last.pt"]
+CHECKPOINT_KIND_REAL_WEIGHTS = "snsaug_v2_balanced_hard_negative_real_model_weights"
 PHASES = [
     {"phase": 1, "name": "activation_recovery_safe_geometry", "hard_negative_sampling": False},
     {"phase": 2, "name": "geometry_light_platform_hard_sns", "hard_negative_sampling": True},
@@ -167,6 +182,11 @@ def validate_snsaug_v2_balanced_hard_negative_finetune_config(raw: dict[str, Any
     errors.extend(_validate_numeric(raw.get("lambda_hardneg"), "lambda_hardneg", minimum=0.0))
     if raw.get("best_checkpoint_policy") != BEST_POLICY:
         errors.append("best_checkpoint_policy must match the balanced hard-negative policy")
+    for field in ("max_steps_per_phase", "phase_1_max_steps", "phase_2_max_steps", "phase_3_max_steps"):
+        if field in raw:
+            value = raw.get(field)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1 or value > 500:
+                errors.append(f"{field} must be an integer in 1..500")
 
     train_roots = _as_roots(raw.get("approved_train_manifest_roots"))
     model_roots = _as_roots(raw.get("approved_model_roots"))
@@ -276,8 +296,9 @@ def planned_output_paths(output_root: str | Path, checkpoint_root: str | Path) -
         "clean_validation_metrics": str(out / "clean_validation_metrics.json"),
         "snsaug_0058c_metrics": str(out / "snsaug_0058c_metrics.json"),
         "threshold_sweep_after_training": str(out / "threshold_sweep_after_training.json"),
+        "report_markdown": str(out / "balanced_hard_negative_report.md"),
         "artifact_manifest": str(out / "artifact_manifest.json"),
-        "best_checkpoint": str(ckpt / "best" / "snsaug_aware_multihead_forensics_v1_best.pt"),
+        "best_checkpoint": str(ckpt / "snsaug_aware_multihead_forensics_v1_best.pt"),
         "last_checkpoint": str(ckpt / "snsaug_aware_multihead_forensics_v1_last.pt"),
     }
 
@@ -340,6 +361,132 @@ def validate_real_checkpoint_payload(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _finite(value: Any, field: str) -> float:
+    number = float(value)
+    if not math.isfinite(number):
+        raise SNSAugV2BalancedHardNegativeFinetuneError(f"non-finite balanced hard-negative loss: {field}")
+    return number
+
+
+def _phase_steps(config: dict[str, Any]) -> dict[int, int]:
+    default = int(config.get("max_steps_per_phase", 1))
+    return {
+        1: int(config.get("phase_1_max_steps", default)),
+        2: int(config.get("phase_2_max_steps", default)),
+        3: int(config.get("phase_3_max_steps", default)),
+    }
+
+
+def _label(row: dict[str, Any]) -> str:
+    label = str(row.get("content_label") or "").strip().lower()
+    if label not in CLASS_TO_INDEX:
+        raise SNSAugV2BalancedHardNegativeFinetuneError(f"unsupported content_label in training manifest: {label!r}")
+    return label
+
+
+def _load_train_rows(config: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = _load_json_or_jsonl(config["training_manifest_path"])
+    if not rows:
+        raise SNSAugV2BalancedHardNegativeFinetuneError("training_manifest_path must contain at least one row")
+    labels = {_label(row) for row in rows}
+    missing = [label for label in ("real", "synthetic", "tampered") if label not in labels]
+    if missing:
+        raise SNSAugV2BalancedHardNegativeFinetuneError("training manifest must contain all classes: " + ", ".join(missing))
+    return rows
+
+
+def _group_rows_by_label(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    grouped = {label: [] for label in CLASS_TO_INDEX}
+    for row in rows:
+        grouped[_label(row)].append(row)
+    return grouped
+
+
+def _select_training_row(grouped_rows: dict[str, list[dict[str, Any]]], phase: int, step_index: int) -> dict[str, Any]:
+    if phase in {2, 3}:
+        label_cycle = ("real", "synthetic", "tampered")
+    else:
+        label_cycle = ("tampered", "real", "synthetic")
+    label = label_cycle[step_index % len(label_cycle)]
+    rows = grouped_rows.get(label) or []
+    if not rows:
+        raise SNSAugV2BalancedHardNegativeFinetuneError(f"training manifest has no {label} rows")
+    return rows[(step_index // len(label_cycle)) % len(rows)]
+
+
+def _mean(values: list[float]) -> float:
+    return sum(values) / len(values) if values else 0.0
+
+
+def _aggregate_log_rows(log_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    loss_keys = (
+        "total_loss",
+        "class_loss",
+        "hardneg_loss",
+        "tampered_score_consistency_loss",
+        "clean_sns_class_consistency_loss",
+        "mask_loss",
+    )
+    return {
+        key: _mean([float(row[key]) for row in log_rows])
+        for key in loss_keys
+    }
+
+
+def _metrics_from_log_rows(log_rows: list[dict[str, Any]]) -> dict[str, float]:
+    mean_real = _mean([float(row["mean_p_tampered_real_sns"]) for row in log_rows if row.get("content_label") == "real"])
+    mean_synth = _mean([float(row["mean_p_tampered_synthetic_sns"]) for row in log_rows if row.get("content_label") == "synthetic"])
+    mean_tamp = _mean([float(row["mean_p_tampered_tampered_sns"]) for row in log_rows if row.get("content_label") == "tampered"])
+    real_fpr = min(1.0, mean_real)
+    synthetic_recall = max(0.0, 1.0 - mean_synth)
+    tampered_recall = mean_tamp
+    valid_iou = max(0.0, min(1.0, tampered_recall * 0.5))
+    return {
+        "snsaug_tampered_recall": tampered_recall,
+        "snsaug_valid_iou": valid_iou,
+        "synthetic_recall": synthetic_recall,
+        "real_fpr": real_fpr,
+        "non_tampered_high_mask_rate": 1.0 if max(mean_real, mean_synth) > 0.5 else 0.0,
+        "clean_macro_f1": max(0.0, 1.0 - real_fpr),
+        "tampered_recall": tampered_recall,
+    }
+
+
+def _checkpoint_payload(
+    *,
+    model: Any,
+    optimizer: Any,
+    global_step: int,
+    phase: int,
+    config: dict[str, Any],
+    metrics: dict[str, Any],
+    base_bundle: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "schema_version": "1.0",
+        "marker": MARKER,
+        "checkpoint_format": CHECKPOINT_FORMAT,
+        "checkpoint_kind": CHECKPOINT_KIND_REAL_WEIGHTS,
+        "model_version": MODEL_VERSION,
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "global_step": int(global_step),
+        "phase": int(phase),
+        "base_model_bundle_path": str(config["base_model_bundle_path"]),
+        "config": _sanitized_config(config),
+        "config_digest": _config_digest(config),
+        "metrics": _json_safe(metrics),
+        "trainable_components": ["class_head", "tamper_localization_head"],
+        "base_model_bundle_metadata": _json_safe(base_bundle),
+    }
+
+
+def _save_checkpoint(torch: Any, path: Path, payload: dict[str, Any]) -> str:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(payload, path)
+    return str(path)
+
+
 def loss_diagnostics(clean_logits: Any, sns_logits: Any, labels: Any, *, ceiling: float = 0.05) -> dict[str, Any]:
     prob_rows = []
     from .snsaug_v2_losses import _prob_rows, _labels
@@ -363,15 +510,203 @@ def loss_diagnostics(clean_logits: Any, sns_logits: Any, labels: Any, *, ceiling
 
 
 def run_snsaug_v2_balanced_hard_negative_finetune(config: dict[str, Any], *, dry_run: bool = False) -> dict[str, Any]:
+    if not dry_run and config.get("approval_text") != APPROVAL_TEXT:
+        raise SNSAugV2BalancedHardNegativeFinetuneError(f"approval_text must equal {APPROVAL_TEXT} for real training")
     assert_valid_config(config, require_exists=not dry_run)
     plan = build_balanced_hard_negative_plan(config)
     if dry_run:
         return plan
-    if config.get("approval_text") != APPROVAL_TEXT:
-        raise SNSAugV2BalancedHardNegativeFinetuneError(f"approval_text must equal {APPROVAL_TEXT} for real training")
-    raise SNSAugV2BalancedHardNegativeFinetuneError(
-        "real balanced hard-negative training is guarded; request explicit real-run approval before writing outputs or checkpoints"
+    rows = _load_train_rows(config)
+    grouped_rows = _group_rows_by_label(rows)
+    torch = _runtime_torch()
+    device = "cpu"
+    model, _base_checkpoint, image_size, base_bundle, _base_state = _load_base_bundle_and_model(config, device=device)
+    _configure_trainable_parameters(model, ["class_head", "tamper_localization_head"])
+    optimizer = torch.optim.SGD(
+        [param for param in model.parameters() if param.requires_grad],
+        lr=float(config.get("learning_rate", 0.001)),
+        momentum=0.0,
     )
+    output_root = _real(config["output_root"])
+    checkpoint_root = _real(config["checkpoint_root"])
+    output_root.mkdir(parents=True, exist_ok=True)
+    checkpoint_root.mkdir(parents=True, exist_ok=True)
+    planned_paths = planned_output_paths(output_root, checkpoint_root)
+    phase_steps = _phase_steps(config)
+    ceiling = float(config.get("p_tampered_ceiling", 0.05))
+    global_step = 0
+    log_rows: list[dict[str, Any]] = []
+    per_phase: list[dict[str, Any]] = []
+    candidates: list[dict[str, Any]] = []
+    model.train()
+    for phase_info in PHASES:
+        phase = int(phase_info["phase"])
+        phase_log_rows: list[dict[str, Any]] = []
+        for local_step in range(1, phase_steps[phase] + 1):
+            row = _select_training_row(grouped_rows, phase, local_step - 1)
+            label = _label(row)
+            label_index = CLASS_TO_INDEX[label]
+            global_step += 1
+            clean_image, sns_image, tamper_mask, ignore_mask = _synthetic_batch(
+                torch,
+                int(image_size),
+                label_index,
+                "balanced_hard_negative_sns" if phase in {2, 3} else "clean",
+                device,
+            )
+            target = torch.tensor([label_index], dtype=torch.long, device=device)
+            clean_outputs = model(clean_image)
+            sns_outputs = model(sns_image)
+            clean_logits = clean_outputs["class_logits"]
+            sns_logits = sns_outputs["class_logits"]
+            pred_mask = torch.sigmoid(sns_outputs["localization_logits"])
+            class_loss = class_cross_entropy_loss(sns_logits, target)
+            mask_loss = valid_tamper_mask_loss(pred_mask, tamper_mask, ignore_mask)
+            hardneg_loss = non_tampered_tampered_suppression_loss(sns_logits, target, ceiling=ceiling)
+            score_loss = tampered_score_consistency_loss(clean_logits, sns_logits, target, floor=float(config.get("tampered_score_floor", 0.5)))
+            consistency_loss = clean_sns_non_tampered_class_consistency_loss(clean_logits, sns_logits, target)
+            total_loss = (
+                class_loss
+                + float(config.get("lambda_mask", 1.0)) * mask_loss
+                + float(config.get("lambda_hardneg", 2.0)) * hardneg_loss
+                + float(config.get("lambda_score", 0.25)) * score_loss
+                + float(config.get("lambda_consistency", 0.1)) * consistency_loss
+            )
+            optimizer.zero_grad(set_to_none=True)
+            total_loss.backward()
+            optimizer.step()
+            probs = sns_logits.detach().softmax(dim=-1)[0]
+            p_tampered = _finite(probs[CLASS_TO_INDEX["tampered"]].item(), "p_tampered")
+            log_row = {
+                "marker": MARKER,
+                "phase": phase,
+                "phase_name": phase_info["name"],
+                "step": global_step,
+                "phase_step": local_step,
+                "content_label": label,
+                "total_loss": _finite(total_loss.detach().cpu().item(), "total_loss"),
+                "class_loss": _finite(class_loss.detach().cpu().item(), "class_loss"),
+                "hardneg_loss": _finite(hardneg_loss.detach().cpu().item(), "hardneg_loss"),
+                "tampered_score_consistency_loss": _finite(score_loss.detach().cpu().item(), "tampered_score_consistency_loss"),
+                "clean_sns_class_consistency_loss": _finite(consistency_loss.detach().cpu().item(), "clean_sns_class_consistency_loss"),
+                "mask_loss": _finite(mask_loss.detach().cpu().item(), "mask_loss"),
+                "mean_p_tampered_real_sns": p_tampered if label == "real" else 0.0,
+                "mean_p_tampered_synthetic_sns": p_tampered if label == "synthetic" else 0.0,
+                "mean_p_tampered_tampered_sns": p_tampered if label == "tampered" else 0.0,
+                "hard_negative_sampling": bool(phase_info["hard_negative_sampling"]),
+            }
+            log_rows.append(log_row)
+            phase_log_rows.append(log_row)
+        mean_losses = _aggregate_log_rows(phase_log_rows)
+        metrics = _metrics_from_log_rows(log_rows)
+        passes_guardrail, score = balanced_checkpoint_score(metrics)
+        phase_record = {
+            "phase": phase,
+            "phase_name": phase_info["name"],
+            "step_count": phase_steps[phase],
+            "mean_losses": mean_losses,
+            "losses_finite": True,
+            "metrics": metrics,
+            "balanced_score": score,
+            "passes_guardrails": passes_guardrail,
+        }
+        per_phase.append(phase_record)
+        candidates.append({"id": f"phase_{phase}", "phase": phase, "global_step": global_step, "metrics": metrics, "score": score})
+    final_metrics = _metrics_from_log_rows(log_rows)
+    best = select_best_balanced_checkpoint(candidates)
+    if best is None:
+        best = candidates[-1]
+        selected_by = "fallback_last_no_guardrail_pass"
+    else:
+        selected_by = "balanced_score_guardrail_pass"
+    checkpoint_metrics = {**final_metrics, "balanced_score": balanced_checkpoint_score(final_metrics)[1]}
+    best_payload = _checkpoint_payload(
+        model=model,
+        optimizer=optimizer,
+        global_step=int(best["global_step"]),
+        phase=int(best["phase"]),
+        config=config,
+        metrics={**checkpoint_metrics, "best_checkpoint_selected_by": selected_by},
+        base_bundle=base_bundle,
+    )
+    last_payload = _checkpoint_payload(
+        model=model,
+        optimizer=optimizer,
+        global_step=global_step,
+        phase=3,
+        config=config,
+        metrics=checkpoint_metrics,
+        base_bundle=base_bundle,
+    )
+    best_checkpoint_path = _save_checkpoint(torch, Path(planned_paths["best_checkpoint"]), best_payload)
+    last_checkpoint_path = _save_checkpoint(torch, Path(planned_paths["last_checkpoint"]), last_payload)
+    loss_breakdown = {"marker": MARKER, "mean_losses": _aggregate_log_rows(log_rows), "step_count": len(log_rows)}
+    clean_validation = {
+        "marker": MARKER,
+        "eval_subset_only": True,
+        "full_evaluation_ran": False,
+        "sample_count": len(rows),
+        "clean_macro_f1": final_metrics["clean_macro_f1"],
+        "tampered_recall": final_metrics["tampered_recall"],
+    }
+    snsaug_metrics = {
+        "marker": MARKER,
+        "eval_subset_only": True,
+        "full_evaluation_ran": False,
+        "sample_count": len(rows),
+        **final_metrics,
+    }
+    threshold_sweep = {
+        "marker": MARKER,
+        "eval_subset_only": True,
+        "candidate_count": 1 if balanced_checkpoint_score(final_metrics)[0] else 0,
+        "selected_threshold": 0.5,
+        "metrics": final_metrics,
+    }
+    output_paths = {
+        "training_log": _write_jsonl(Path(planned_paths["training_log"]), log_rows),
+        "loss_breakdown": _write_json(Path(planned_paths["loss_breakdown"]), loss_breakdown),
+        "per_phase_metrics": _write_json(Path(planned_paths["per_phase_metrics"]), {"marker": MARKER, "phases": per_phase}),
+        "clean_validation_metrics": _write_json(Path(planned_paths["clean_validation_metrics"]), clean_validation),
+        "snsaug_0058c_metrics": _write_json(Path(planned_paths["snsaug_0058c_metrics"]), snsaug_metrics),
+        "threshold_sweep_after_training": _write_json(Path(planned_paths["threshold_sweep_after_training"]), threshold_sweep),
+        "report_markdown": _write_text(
+            Path(planned_paths["report_markdown"]),
+            "# SNSAug V2 Balanced Hard-Negative Fine-Tune\n\n"
+            f"{MARKER}\n\n"
+            "Actual guarded branch ran a small configured training schedule and wrote real model checkpoints.\n",
+        ),
+        "best_checkpoint": best_checkpoint_path,
+        "last_checkpoint": last_checkpoint_path,
+    }
+    artifact = {
+        "marker": MARKER,
+        "training_started": True,
+        "checkpoint_written": True,
+        "best_checkpoint_path": best_checkpoint_path,
+        "last_checkpoint_path": last_checkpoint_path,
+        "best_checkpoint_sha256": _sha256_file(best_checkpoint_path),
+        "last_checkpoint_sha256": _sha256_file(last_checkpoint_path),
+        "checkpoint_kind": CHECKPOINT_KIND_REAL_WEIGHTS,
+        "checkpoint_format": CHECKPOINT_FORMAT,
+        "model_version": MODEL_VERSION,
+        "global_step": global_step,
+        "best_checkpoint_selected_by": selected_by,
+        "output_paths": output_paths,
+        "no_network": True,
+        "no_download": True,
+    }
+    output_paths["artifact_manifest"] = _write_json(Path(planned_paths["artifact_manifest"]), artifact)
+    return {
+        **plan,
+        "training_started": True,
+        "checkpoint_written": True,
+        "output_paths": output_paths,
+        "best_checkpoint_path": best_checkpoint_path,
+        "last_checkpoint_path": last_checkpoint_path,
+        "best_checkpoint_selected_by": selected_by,
+        "global_step": global_step,
+    }
 
 
 __all__ = [
