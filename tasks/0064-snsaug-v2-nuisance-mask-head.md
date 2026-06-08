@@ -90,6 +90,30 @@ Default:
 
 The point is not to erase image evidence completely. The point is to reduce the tendency to interpret SNS overlay as malicious tamper.
 
+## Files Codex May Modify
+
+- `tasks/0064-snsaug-v2-nuisance-mask-head.md`
+- `src/cv_forensics/snsaug_v2_nuisance_model.py`
+- `src/cv_forensics/snsaug_v2_nuisance_losses.py`
+- `src/cv_forensics/snsaug_v2_nuisance_finetune.py`
+- `scripts/training/run_snsaug_v2_nuisance_finetune.py`
+- `scripts/agent/validate_snsaug_v2_nuisance_finetune_config.py`
+- `configs/training/snsaug_v2_nuisance_finetune.example.json`
+- `tests/test_snsaug_v2_nuisance_finetune.py`
+- `docs/snsaug_v2_nuisance_finetune.md`
+
+## Files Claude May Modify
+
+- `tasks/0064-snsaug-v2-nuisance-mask-head.md`
+- `src/cv_forensics/snsaug_v2_nuisance_model.py`
+- `src/cv_forensics/snsaug_v2_nuisance_losses.py`
+- `src/cv_forensics/snsaug_v2_nuisance_finetune.py`
+- `scripts/training/run_snsaug_v2_nuisance_finetune.py`
+- `scripts/agent/validate_snsaug_v2_nuisance_finetune_config.py`
+- `configs/training/snsaug_v2_nuisance_finetune.example.json`
+- `tests/test_snsaug_v2_nuisance_finetune.py`
+- `docs/snsaug_v2_nuisance_finetune.md`
+
 ## Required Files
 
 Add or update:
