@@ -1,0 +1,64 @@
+{
+  "schema_version": "1.0",
+  "config_kind": "approved_snsaug_v2_balanced_hard_negative_finetune",
+  "execution_mode": "approved_local_snsaug_v2_balanced_hard_negative_finetune",
+  "run_kind": "balanced_hard_negative_finetune",
+  "model_version": "snsaug_aware_multihead_forensics_v1",
+  "approval_text": "DRY_RUN_ONLY",
+  "start_from_pre_sns_best": true,
+  "no_training_from_scratch": true,
+  "base_model_bundle_path": "/home/rlatjswo/projects/cv-forensics/.local/pre_sns_current_best_model_bundle.json",
+  "training_manifest_path": "/home/rlatjswo/cvf_runs/snsaug_v2_0059_train_curriculum_manifest_YYYYMMDD_HHMMSS/snsaug_v2_train_curriculum_manifest.jsonl",
+  "curriculum_schedule_path": "/home/rlatjswo/cvf_runs/snsaug_v2_0059_train_curriculum_manifest_YYYYMMDD_HHMMSS/snsaug_v2_curriculum_schedule.json",
+  "profile_sampling_weights_path": "/home/rlatjswo/cvf_runs/snsaug_v2_0059_train_curriculum_manifest_YYYYMMDD_HHMMSS/snsaug_v2_profile_sampling_weights.json",
+  "clean_validation_manifest_path": "/home/rlatjswo/cvf_runs/pre_sns_clean_validation_manifest_YYYYMMDD_HHMMSS/clean_validation_manifest.jsonl",
+  "evaluation_pair_root_0058c": "/home/rlatjswo/cvf_runs/snsaug_v2_0058c_small_val_pairs_20pc_balanced_YYYYMMDD_HHMMSS",
+  "approved_train_manifest_roots": [
+    "/home/rlatjswo/cvf_runs"
+  ],
+  "approved_model_roots": [
+    "/home/rlatjswo/projects/cv-forensics/.local"
+  ],
+  "approved_evaluation_roots": [
+    "/home/rlatjswo/cvf_runs"
+  ],
+  "approved_output_roots": [
+    "/home/rlatjswo/cvf_runs"
+  ],
+  "approved_checkpoint_roots": [
+    "/home/rlatjswo/cvf_checkpoints"
+  ],
+  "output_root": "/home/rlatjswo/cvf_runs/snsaug_v2_0063_balanced_hard_negative_finetune_YYYYMMDD_HHMMSS",
+  "checkpoint_root": "/home/rlatjswo/cvf_checkpoints/snsaug_v2_0063_balanced_hard_negative_finetune_YYYYMMDD_HHMMSS",
+  "p_tampered_ceiling": 0.05,
+  "lambda_hardneg": 2.0,
+  "lambda_score": 0.25,
+  "lambda_consistency": 0.1,
+  "hard_negative_sampling": {
+    "enabled": true,
+    "non_tampered_sns_to_tampered_sns_ratio": [
+      2,
+      1
+    ]
+  },
+  "best_checkpoint_policy": {
+    "primary": "balanced_score",
+    "formula": {
+      "snsaug_tampered_recall": 1.0,
+      "snsaug_valid_iou": 1.0,
+      "synthetic_recall": 0.8,
+      "real_fpr": -2.0,
+      "non_tampered_high_mask_rate": -1.0
+    },
+    "guardrails": {
+      "real_fpr_lte": 0.3,
+      "synthetic_recall_gte": 0.4,
+      "clean_macro_f1_gte": 0.75,
+      "tampered_recall_gte": 0.5
+    }
+  },
+  "enable_real_training": false,
+  "write_checkpoints": false,
+  "no_network": true,
+  "no_download": true
+}

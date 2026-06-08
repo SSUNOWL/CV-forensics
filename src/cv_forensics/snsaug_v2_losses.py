@@ -202,15 +202,23 @@ def clean_sns_class_consistency_loss(clean_logits: Any, sns_logits: Any, reducti
     return sum(losses) / max(1, len(losses))
 
 
-def hard_negative_tampered_loss(logits: Any, labels: Any, reduction: str = "mean"):
-    """Penalize high p_tampered for real/synthetic SNSAug hard negatives."""
+def clean_sns_non_tampered_class_consistency_loss(clean_logits: Any, sns_logits: Any, labels: Any, reduction: str = "mean"):
+    """Symmetric KL on real/synthetic mass only, applied to non-tampered labels."""
 
-    torch, _F = _torch_modules()
-    if torch is not None and hasattr(logits, "shape"):
-        target_labels = labels if hasattr(labels, "shape") else torch.tensor(_labels(labels), device=logits.device)
+    torch, F = _torch_modules()
+    if torch is not None and hasattr(clean_logits, "shape"):
+        target_labels = labels if hasattr(labels, "shape") else torch.tensor(_labels(labels), device=clean_logits.device)
         mask = (target_labels.long() != TAMPERED_INDEX).float()
-        tampered_prob = logits.float().softmax(dim=-1)[:, TAMPERED_INDEX]
-        loss = tampered_prob.pow(2) * mask
+        clean_prob = clean_logits.float().softmax(dim=-1)[:, :TAMPERED_INDEX]
+        sns_prob = sns_logits.float().softmax(dim=-1)[:, :TAMPERED_INDEX]
+        clean_prob = clean_prob / clean_prob.sum(dim=-1, keepdim=True).clamp(min=1e-6)
+        sns_prob = sns_prob / sns_prob.sum(dim=-1, keepdim=True).clamp(min=1e-6)
+        clean_log = clean_prob.clamp(min=1e-6).log()
+        sns_log = sns_prob.clamp(min=1e-6).log()
+        loss = 0.5 * (
+            F.kl_div(clean_log, sns_prob, reduction="none").sum(dim=-1)
+            + F.kl_div(sns_log, clean_prob, reduction="none").sum(dim=-1)
+        ) * mask
         if reduction == "sum":
             return loss.sum()
         if reduction == "none":
@@ -218,14 +226,59 @@ def hard_negative_tampered_loss(logits: Any, labels: Any, reduction: str = "mean
         return loss.sum() / mask.sum().clamp(min=1.0)
 
     losses = []
-    for row, label in zip(_prob_rows(logits), _labels(labels)):
-        losses.append(0.0 if label == TAMPERED_INDEX else row[TAMPERED_INDEX] ** 2)
+    labels_list = _labels(labels)
+    for clean, sns, label in zip(_prob_rows(clean_logits), _prob_rows(sns_logits), labels_list):
+        if label == TAMPERED_INDEX:
+            losses.append(0.0)
+            continue
+        clean_pair = clean[:TAMPERED_INDEX]
+        sns_pair = sns[:TAMPERED_INDEX]
+        clean_total = sum(clean_pair) or 1.0
+        sns_total = sum(sns_pair) or 1.0
+        clean_norm = [value / clean_total for value in clean_pair]
+        sns_norm = [value / sns_total for value in sns_pair]
+        kl_left = sum(c * math.log(max(c, 1e-6) / max(s, 1e-6)) for c, s in zip(clean_norm, sns_norm))
+        kl_right = sum(s * math.log(max(s, 1e-6) / max(c, 1e-6)) for c, s in zip(clean_norm, sns_norm))
+        losses.append(0.5 * (kl_left + kl_right))
     if reduction == "sum":
         return sum(losses)
     if reduction == "none":
         return losses
-    denom = sum(1 for label in _labels(labels) if label != TAMPERED_INDEX) or 1
+    denom = sum(1 for label in labels_list if label != TAMPERED_INDEX) or 1
     return sum(losses) / denom
+
+
+def non_tampered_tampered_suppression_loss(logits: Any, labels: Any, *, ceiling: float = 0.05, reduction: str = "mean"):
+    """Penalize real/synthetic rows only when p_tampered exceeds the configured ceiling."""
+
+    torch, _F = _torch_modules()
+    if torch is not None and hasattr(logits, "shape"):
+        target_labels = labels if hasattr(labels, "shape") else torch.tensor(_labels(labels), device=logits.device)
+        mask = (target_labels.long() != TAMPERED_INDEX).float()
+        tampered_prob = logits.float().softmax(dim=-1)[:, TAMPERED_INDEX]
+        loss = (tampered_prob - float(ceiling)).clamp(min=0.0).pow(2) * mask
+        if reduction == "sum":
+            return loss.sum()
+        if reduction == "none":
+            return loss
+        return loss.sum() / mask.sum().clamp(min=1.0)
+
+    losses = []
+    labels_list = _labels(labels)
+    for row, label in zip(_prob_rows(logits), labels_list):
+        losses.append(0.0 if label == TAMPERED_INDEX else max(0.0, row[TAMPERED_INDEX] - float(ceiling)) ** 2)
+    if reduction == "sum":
+        return sum(losses)
+    if reduction == "none":
+        return losses
+    denom = sum(1 for label in labels_list if label != TAMPERED_INDEX) or 1
+    return sum(losses) / denom
+
+
+def hard_negative_tampered_loss(logits: Any, labels: Any, reduction: str = "mean", *, ceiling: float = 0.05):
+    """Backward-compatible name for non-tampered tampered suppression."""
+
+    return non_tampered_tampered_suppression_loss(logits, labels, ceiling=ceiling, reduction=reduction)
 
 
 def masked_family_loss(logits: Any, targets: Any, family_loss_mask: Any, reduction: str = "mean"):
