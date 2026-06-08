@@ -1,6 +1,7 @@
 """Evaluation-only comparison for SNSAug V2 fine-tuned checkpoints."""
 
 from __future__ import annotations
+import math
 
 import json
 import hashlib
@@ -912,6 +913,43 @@ def sanity_check_outputs(
     return warnings_out
 
 
+
+def _finite_float_or_default(value, default):
+    """Return a finite float, replacing None/NaN/inf/non-numeric values.
+
+    Some records legitimately have no localization IoU, for example real/synthetic
+    samples or samples where localization was not activated. Worst-sample export
+    must not crash on those rows.
+    """
+    if value is None:
+        return float(default)
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return float(default)
+    if not math.isfinite(out):
+        return float(default)
+    return out
+
+
+def _worst_sample_sort_key(item):
+    """Sort key for worst-sample export that tolerates missing mask/probability fields.
+
+    Lower IoU should appear earlier. Records without a localization IoU are pushed
+    later by using default IoU=1.0. Missing p_tampered becomes 0.0.
+    """
+    valid_iou = item.get("valid_iou")
+    if valid_iou is None:
+        valid_iou = item.get("tampered_valid_iou")
+    if valid_iou is None:
+        valid_iou = item.get("tampered_valid_mean_iou")
+
+    valid_iou_f = _finite_float_or_default(valid_iou, 1.0)
+    p_tampered_f = _finite_float_or_default(item.get("p_tampered"), 0.0)
+
+    return (valid_iou_f, -p_tampered_f)
+
+
 def run_snsaug_v2_checkpoint_comparison_eval(config: dict[str, Any]) -> dict[str, Any]:
     assert_valid_config(config, require_exists=True)
     pair_root = _real(config["pair_root"])
@@ -980,7 +1018,7 @@ def run_snsaug_v2_checkpoint_comparison_eval(config: dict[str, Any]) -> dict[str
     worst = {
         model_id: sorted(
             [row for row in records if row["model_id"] == model_id and row["content_label"] == "tampered"],
-            key=lambda item: (float(item["valid_iou"]), -float(item["p_tampered"])),
+            key=_worst_sample_sort_key,
         )[: int(config.get("worst_sample_count", 10))]
         for model_id in model_ids
     }
