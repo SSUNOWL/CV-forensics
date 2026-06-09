@@ -22,7 +22,9 @@ The gate is soft. It reduces the tendency to treat platform UI bars, text overla
 
 ## Stabilization
 
-0064e warm-starts the shared backbone, class head, decoder, and tamper mask head from the configured pre-SNS bundle or `warm_start_checkpoint_path`. Newly added `sns_nuisance_mask_head`, `global_degradation_head`, and `reliability_head` remain fresh. Each real run writes `warm_start_report.json` with loaded/missing keys and loaded/total tensor counts.
+0064e warm-starts the shared backbone, class head, decoder, and tamper mask head from the configured pre-SNS bundle or `warm_start_checkpoint_path`. Newly added `sns_nuisance_mask_head`, `global_degradation_head`, and `reliability_head` remain fresh. Each real run writes `warm_start_report.json` with warm-start provenance, loaded/missing keys, loaded/total tensor counts, and `loaded_ratio = loaded_numel / total_numel`.
+
+`artifact_manifest.json` also includes `warm_start_summary` with the source path, loaded/total numel, loaded ratio, and missing/unexpected key counts so audits can verify warm-start coverage without opening the full report.
 
 Gating is staged:
 

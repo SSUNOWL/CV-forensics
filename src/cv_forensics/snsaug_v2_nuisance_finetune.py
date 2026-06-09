@@ -168,6 +168,7 @@ def validate_snsaug_v2_nuisance_finetune_config(raw: dict[str, Any], require_exi
         ("phase_3_gating_alpha_max", 0.3),
         ("p_tampered_ceiling", 0.05),
         ("min_warm_start_loaded_numel_ratio", 0.25),
+        ("require_warm_start_loaded_numel_ratio_gte", 0.0),
     ):
         value = raw.get(field, default)
         errors.extend(
@@ -183,6 +184,7 @@ def validate_snsaug_v2_nuisance_finetune_config(raw: dict[str, Any], require_exi
                     "phase_3_gating_alpha_max",
                     "p_tampered_ceiling",
                     "min_warm_start_loaded_numel_ratio",
+                    "require_warm_start_loaded_numel_ratio_gte",
                 }
                 else None,
             )
@@ -462,6 +464,8 @@ def warm_start_nuisance_model(model: Any, source_state: dict[str, Any], *, sourc
     loaded_numel = _state_tensor_numel(loadable)
     total_numel = _state_tensor_numel(model_state)
     source_numel = _state_tensor_numel(source_state)
+    loaded_ratio = loaded_numel / total_numel if total_numel > 0 else None
+    source = "warm_start_checkpoint_path" if config.get("warm_start_checkpoint_path") else "pre_sns_best_bundle_path" if config.get("pre_sns_best_bundle_path") else "base_model_bundle_path"
     min_ratio = float(config.get("min_warm_start_loaded_numel_ratio", 0.25))
     if source_numel > 0 and loaded_numel < source_numel * min_ratio and not bool(config.get("allow_partial_warm_start", False)):
         raise SNSAugV2NuisanceFinetuneError(
@@ -470,14 +474,31 @@ def warm_start_nuisance_model(model: Any, source_state: dict[str, Any], *, sourc
     return {
         "marker": MARKER,
         "source_path": source_path,
+        "warm_start_source": source,
+        "warm_start_checkpoint_path": source_path,
+        "warm_start_checkpoint_exists": Path(source_path).expanduser().exists(),
         "loaded_keys": loaded_keys,
         "missing_keys": missing_keys,
         "unexpected_keys": sorted(str(key) for key in source_state.keys() if key not in set(_candidate_warm_key(k) for k in model_state)),
         "shape_mismatch_keys": shape_mismatch_keys,
+        "loaded_key_count": len(loaded_keys),
+        "total_key_count": len(model_state),
         "loaded_numel": loaded_numel,
         "total_numel": total_numel,
+        "loaded_ratio": loaded_ratio,
         "source_tensor_total_numel": source_numel,
         "allow_partial_warm_start": bool(config.get("allow_partial_warm_start", False)),
+    }
+
+
+def _warm_start_summary(report: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "warm_start_checkpoint_path": report.get("warm_start_checkpoint_path"),
+        "loaded_numel": report.get("loaded_numel"),
+        "total_numel": report.get("total_numel"),
+        "loaded_ratio": report.get("loaded_ratio"),
+        "missing_key_count": len(report.get("missing_keys") or []),
+        "unexpected_key_count": len(report.get("unexpected_keys") or []),
     }
 
 
@@ -742,6 +763,11 @@ def run_snsaug_v2_nuisance_finetune(config: dict[str, Any], *, dry_run: bool = F
         raise SNSAugV2NuisanceFinetuneError(
             "nuisance checkpoint tensor_total_numel is far smaller than warm-start checkpoint"
         )
+    required_loaded_ratio = config.get("require_warm_start_loaded_numel_ratio_gte")
+    if required_loaded_ratio is not None and float(warm_start_report.get("loaded_ratio") or 0.0) < float(required_loaded_ratio):
+        raise SNSAugV2NuisanceFinetuneError(
+            f"warm-start loaded_ratio below audit threshold: {warm_start_report.get('loaded_ratio')} < {required_loaded_ratio}"
+        )
     output_paths = {
         "training_log": _write_jsonl(Path(paths["training_log"]), log_rows),
         "warm_start_report": _write_json(Path(paths["warm_start_report"]), warm_start_report),
@@ -775,6 +801,7 @@ def run_snsaug_v2_nuisance_finetune(config: dict[str, Any], *, dry_run: bool = F
         "warm_start_report_path": paths["warm_start_report"],
         "warm_start_loaded_numel": warm_start_report["loaded_numel"],
         "warm_start_source_tensor_total_numel": warm_start_report["source_tensor_total_numel"],
+        "warm_start_summary": _warm_start_summary(warm_start_report),
         "tensor_total_numel": checkpoint_stats["tensor_total_numel"],
         "best_checkpoint_selected_by": selected_by,
         "collapse_guard": collapse_guard,

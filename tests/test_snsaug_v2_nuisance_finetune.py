@@ -121,6 +121,7 @@ def safe_config(root: Path) -> dict[str, object]:
         "phase_3_gating_alpha_max": 0.3,
         "p_tampered_ceiling": 0.05,
         "min_warm_start_loaded_numel_ratio": 0.1,
+        "require_warm_start_loaded_numel_ratio_gte": 0.0,
         "allow_partial_warm_start": False,
         "allow_joint_tuning": False,
         "max_steps_per_phase": 1,
@@ -235,6 +236,7 @@ def test_tiny_real_run_writes_checkpoints() -> None:
     root = temp_root("cvf_0064_real_")
     cfg = safe_config(root)
     cfg["approval_text"] = APPROVAL_TEXT
+    cfg["require_warm_start_loaded_numel_ratio_gte"] = 0.90
     summary = run_snsaug_v2_nuisance_finetune(cfg, dry_run=False)
     assert_true(summary["training_started"] is True, "training started")
     assert_true(summary["checkpoint_written"] is True, "checkpoint written")
@@ -260,12 +262,22 @@ def test_tiny_real_run_writes_checkpoints() -> None:
     ):
         assert_true(key in rows[0] and float(rows[0][key]) >= 0.0, f"{key} logged")
     warm = json.loads(Path(paths["warm_start_report"]).read_text(encoding="utf-8"))
+    assert_true(warm["warm_start_checkpoint_path"], "warm_start_checkpoint_path present")
+    assert_true(warm["warm_start_checkpoint_exists"] is True, "warm-start source exists")
     assert_true(warm["loaded_numel"] > 0, "warm-start loaded weights")
     assert_true(warm["total_numel"] >= warm["loaded_numel"], "warm-start report total numel")
+    assert_true(isinstance(warm["loaded_ratio"], float), "loaded_ratio finite")
+    assert_equal(round(warm["loaded_ratio"], 8), round(warm["loaded_numel"] / warm["total_numel"], 8), "loaded ratio formula")
+    assert_equal(warm["loaded_key_count"], len(warm["loaded_keys"]), "loaded key count")
+    assert_true(warm["total_key_count"] >= warm["loaded_key_count"], "total key count")
     import torch
 
     artifact = json.loads(Path(paths["artifact_manifest"]).read_text(encoding="utf-8"))
     assert_true(artifact["warm_start_loaded_numel"] > 0, "artifact warm-start numel")
+    assert_true("warm_start_summary" in artifact, "artifact warm_start_summary")
+    assert_equal(artifact["warm_start_summary"]["warm_start_checkpoint_path"], warm["warm_start_checkpoint_path"], "summary path")
+    assert_equal(artifact["warm_start_summary"]["loaded_ratio"], warm["loaded_ratio"], "summary ratio")
+    assert_equal(artifact["warm_start_summary"]["missing_key_count"], len(warm["missing_keys"]), "summary missing count")
     assert_true(artifact["tensor_total_numel"] >= artifact["warm_start_loaded_numel"], "checkpoint tensor count comparable")
     for key in ("best_checkpoint", "last_checkpoint"):
         payload = torch.load(paths[key], map_location="cpu")
