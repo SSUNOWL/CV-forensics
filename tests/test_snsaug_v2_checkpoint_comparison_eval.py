@@ -25,6 +25,7 @@ from cv_forensics.snsaug_v2_checkpoint_comparison_eval import (  # noqa: E402
 import cv_forensics.snsaug_v2_checkpoint_comparison_eval as eval_mod  # noqa: E402
 from cv_forensics.pre_sns_v3_model import build_pre_sns_v3_model  # noqa: E402
 from cv_forensics.pre_sns_v3_tile_localizer_v2_model import build_pre_sns_v3_tile_localizer_v2  # noqa: E402
+from cv_forensics.snsaug_v2_nuisance_model import build_snsaug_v2_nuisance_model  # noqa: E402
 
 
 def assert_true(value: bool, message: str) -> None:
@@ -97,6 +98,29 @@ def _tile_checkpoint(path: Path) -> None:
             "input_feature_mode": "rgb_only",
             "boundary_head": True,
             "confidence_head": True,
+        },
+        path,
+    )
+
+
+def _nuisance_checkpoint(path: Path) -> None:
+    import torch
+
+    model = build_snsaug_v2_nuisance_model(torch, base_channels=2)
+    for param in model.parameters():
+        param.data.zero_()
+    model.class_head[2].bias.data.copy_(torch.tensor([-1.0, -1.0, 4.0]))
+    model.tamper_mask_head.bias.data.fill_(-6.0)
+    torch.save(
+        {
+            "schema_version": "1.0",
+            "checkpoint_kind": "snsaug_v2_nuisance_mask_real_model_weights",
+            "model_version": "snsaug_aware_nuisance_multihead_forensics_v1",
+            "image_size": 16,
+            "config": {"base_channels": 2, "image_size": 16, "gating_alpha": 0.5},
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": {},
+            "global_step": 1,
         },
         path,
     )
@@ -304,6 +328,18 @@ def test_evaluator_outputs_metrics_and_no_training_flags() -> None:
     assert_equal(gallery["model_id"], "snsaug_medium_150x3", "150x3 gallery")
 
 
+def test_two_model_baseline_comparison_still_passes() -> None:
+    root = temp_root("cvf_0064c_twomodel_")
+    cfg = safe_config(root)
+    cfg["models"] = cfg["models"][:2]
+    cfg["visual_gallery_model_id"] = "snsaug_guarded_short_30x3"
+    summary = run_snsaug_v2_checkpoint_comparison_eval(cfg)
+    comparison = json.loads(Path(summary["output_paths"]["checkpoint_comparison_summary"]).read_text(encoding="utf-8"))
+    assert_equal(len(comparison["comparisons"]), 1, "one two-model comparison")
+    records = [json.loads(line) for line in Path(summary["output_paths"]["model_eval_records"]).read_text(encoding="utf-8").splitlines()]
+    assert_true(all(row.get("p_tampered") is not None for row in records), "two-model records keep p_tampered")
+
+
 def test_matching_row_id_records_produce_comparisons() -> None:
     records = [
         _join_record("custom_left", row_id="row-1", pred_class="real", valid_iou=0.1, p_tampered=0.2),
@@ -392,6 +428,47 @@ def test_probability_adapter_extracts_nuisance_class_probs() -> None:
     assert_equal(round(row["p_tampered"], 4), 0.25, "tampered probability normalized")
 
 
+def test_nuisance_checkpoint_detection_from_state_dict_keys() -> None:
+    root = temp_root("cvf_0064c_detect_")
+    pair_root, _meta, bundle_path, _short, _medium = write_fixture(root)
+    nuisance_path = root / "ckpts" / "nuisance.pt"
+    _nuisance_checkpoint(nuisance_path)
+    baseline_bundle = eval_mod._resolve_baseline_bundle({"model_id": "pre", "model_kind": "pre_sns_bundle", "model_path": str(bundle_path)})
+    bundle, info = eval_mod._bundle_for_finetuned_checkpoint(
+        model={"model_id": "snsaug_0064_nuisance_30x3", "model_kind": "snsaug_finetuned_checkpoint", "model_path": str(nuisance_path)},
+        baseline_bundle=baseline_bundle,
+        derived_root=root / "out" / "_derived",
+    )
+    assert_equal(bundle["__comparison_model_type"], "snsaug_v2_nuisance", "nuisance bundle type")
+    assert_equal(info["comparison_model_type"], "snsaug_v2_nuisance", "nuisance info type")
+    assert_true(int(info["tensor_total_numel"]) > 1000, "real nuisance tensors counted")
+    assert_true(pair_root.exists(), "fixture pair root exists")
+
+
+def test_nuisance_checkpoint_evaluation_emits_standard_probabilities() -> None:
+    root = temp_root("cvf_0064c_nuisance_eval_")
+    pair_root, meta, bundle, short, _medium = write_fixture(root)
+    nuisance = root / "ckpts" / "nuisance.pt"
+    _nuisance_checkpoint(nuisance)
+    cfg = safe_config(root)
+    cfg["models"] = [
+        {"model_id": "pre_sns_baseline", "model_kind": "pre_sns_bundle", "model_path": str(bundle)},
+        {"model_id": "snsaug_guarded_short_30x3", "model_kind": "snsaug_finetuned_checkpoint", "model_path": str(short)},
+        {"model_id": "snsaug_0064_nuisance_30x3", "model_kind": "snsaug_finetuned_checkpoint", "model_path": str(nuisance)},
+    ]
+    cfg["visual_gallery_model_id"] = "snsaug_0064_nuisance_30x3"
+    cfg["comparison_pairs"] = [["pre_sns_baseline", "snsaug_0064_nuisance_30x3"]]
+    assert_equal(str(cfg["pair_root"]), str(pair_root), "same pair root")
+    assert_equal(str(cfg["meta_jsonl_path"]), str(meta), "same meta")
+    summary = run_snsaug_v2_checkpoint_comparison_eval(cfg)
+    records = [json.loads(line) for line in Path(summary["output_paths"]["model_eval_records"]).read_text(encoding="utf-8").splitlines()]
+    nuisance_rows = [row for row in records if row["model_id"] == "snsaug_0064_nuisance_30x3"]
+    assert_true(nuisance_rows, "nuisance records written")
+    assert_true(all(row.get("p_tampered") is not None for row in nuisance_rows), "nuisance p_tampered populated")
+    assert_true(all(row.get("pred_class") == "tampered" for row in nuisance_rows), "nuisance pred_class from logits")
+    assert_true(not (Path(cfg["output_root"]) / "model_eval_record_errors.jsonl").exists(), "no nuisance errors")
+
+
 def test_missing_probability_output_writes_diagnostics_then_fails() -> None:
     root = temp_root("cvf_0064b_probdiag_")
     pair_root = root / "eval" / "snsaug_v2_0058c_fixed_pairs"
@@ -445,6 +522,56 @@ def test_missing_probability_output_writes_diagnostics_then_fails() -> None:
     assert_true("classification.score" in diagnostics["available_nested_keys"], "nested keys recorded")
     partial = [json.loads(line) for line in records_path.read_text(encoding="utf-8").splitlines()]
     assert_true(partial and partial[0]["p_tampered"] is None, "partial record preserves missing probability")
+
+
+def test_inference_error_writes_record_errors_and_diagnostics() -> None:
+    root = temp_root("cvf_0064c_errors_")
+    pair_root = root / "eval" / "snsaug_v2_0058c_fixed_pairs"
+    output_root = root / "out"
+    pair_root.mkdir(parents=True, exist_ok=True)
+    original_fixed_pair = eval_mod.fixed_pair_evaluate_rows
+
+    def fake_fixed_pair_evaluate_rows(bundle, fixed_config, rows):
+        return [
+            {
+                "base_id": "broken",
+                "profile": "clean",
+                "view": "clean",
+                "content_label": "real",
+                "image_path": str(pair_root / "broken.png"),
+                "p_real": None,
+                "p_synthetic": None,
+                "p_tampered": None,
+                "error": "load failed",
+                "traceback": "Traceback: load failed",
+            }
+        ]
+
+    eval_mod.fixed_pair_evaluate_rows = fake_fixed_pair_evaluate_rows
+    try:
+        try:
+            eval_mod._evaluate_model_records(
+                model={"model_id": "broken_model", "model_kind": "snsaug_finetuned_checkpoint", "model_path": str(root / "ckpts" / "broken.pt")},
+                bundle={},
+                config={"pair_root": str(pair_root), "approved_pair_roots": [str(root / "eval")], "approved_model_roots": [str(root / "ckpts")]},
+                rows=[{"base_id": "broken", "profile": "clean", "content_label": "real"}],
+                output_root=output_root,
+            )
+        except SNSAugV2CheckpointComparisonEvalError as exc:
+            assert_true("inference errors" in str(exc), "inference errors fail clearly")
+        else:
+            raise AssertionError("inference errors must fail")
+    finally:
+        eval_mod.fixed_pair_evaluate_rows = original_fixed_pair
+
+    errors_path = output_root / "model_eval_record_errors.jsonl"
+    diagnostics_path = output_root / "probability_adapter_diagnostics.json"
+    assert_true(errors_path.exists(), "record errors written")
+    assert_true(diagnostics_path.exists(), "diagnostics written")
+    error_rows = [json.loads(line) for line in errors_path.read_text(encoding="utf-8").splitlines()]
+    assert_equal(error_rows[0]["error"], "load failed", "error message preserved")
+    diagnostics = json.loads(diagnostics_path.read_text(encoding="utf-8"))
+    assert_equal(diagnostics["error"], "load failed", "diagnostic error preserved")
 
 
 def test_missing_join_keys_writes_diagnostics_then_fails() -> None:
@@ -562,13 +689,17 @@ def main() -> int:
     tests = [
         test_validator_rejects_training_eval_input_and_repo_output,
         test_evaluator_outputs_metrics_and_no_training_flags,
+        test_two_model_baseline_comparison_still_passes,
         test_matching_row_id_records_produce_comparisons,
         test_matching_composite_records_produce_comparisons,
         test_custom_model_id_and_explicit_comparison_pairs,
         test_probability_adapter_keeps_existing_record_probabilities,
         test_probability_adapter_extracts_nuisance_class_logits,
         test_probability_adapter_extracts_nuisance_class_probs,
+        test_nuisance_checkpoint_detection_from_state_dict_keys,
+        test_nuisance_checkpoint_evaluation_emits_standard_probabilities,
         test_missing_probability_output_writes_diagnostics_then_fails,
+        test_inference_error_writes_record_errors_and_diagnostics,
         test_missing_join_keys_writes_diagnostics_then_fails,
         test_invalid_checkpoint_path_fails,
         test_trainable_state_only_checkpoint_fails_real_inference,

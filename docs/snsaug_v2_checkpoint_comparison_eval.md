@@ -22,6 +22,12 @@ SNSAug fine-tuned checkpoints may emit different inference schemas. The evaluato
 
 Logits are converted with softmax over `[real, synthetic, tampered]`. Probability vectors are converted to non-negative values and normalized. The evaluator does not silently set `p_tampered=0`; if no explicit class probability vector can be found it writes `probability_adapter_diagnostics.json` and partial `model_eval_records.jsonl`, then fails.
 
+## Nuisance Checkpoints
+
+0064 nuisance checkpoints are detected from checkpoint metadata (`checkpoint_kind` or `model_version` containing `nuisance`) or state-dict keys such as `sns_nuisance_mask_head`, `global_degradation_head`, `reliability_head`, or `tamper_mask_head`. These checkpoints are evaluated with the native `snsaug_v2_nuisance_model` architecture instead of being forced through the older pre-SNS policy-gated bundle path.
+
+If model loading or per-record inference fails, the evaluator writes `model_eval_record_errors.jsonl`, `probability_adapter_diagnostics.json`, and partial `model_eval_records.jsonl`, then fails clearly unless `continue_on_record_error=true` is set.
+
 Model IDs are not fixed. The historical IDs remain valid examples:
 
 - `pre_sns_baseline`
@@ -62,6 +68,7 @@ The external output root contains:
 - `model_eval_comparisons.jsonl`
 - `comparison_join_diagnostics.json`
 - `probability_adapter_diagnostics.json` when class probabilities cannot be adapted
+- `model_eval_record_errors.jsonl` when model loading or record inference fails
 - `per_model_per_profile_metrics.json`
 - `robustness_drop_by_model.json`
 - `checkpoint_comparison_summary.json`

@@ -5,6 +5,8 @@ import math
 
 import json
 import hashlib
+import time
+import traceback
 import warnings
 from itertools import combinations
 from pathlib import Path
@@ -12,6 +14,7 @@ from typing import Any
 
 from .pre_sns_v3_sns_robustness_eval import load_best_bundle
 from .snsaug_v2_fixed_pairs_eval import (
+    compute_mask_metrics,
     evaluate_rows as fixed_pair_evaluate_rows,
     parse_fixed_pair_rows,
 )
@@ -310,6 +313,43 @@ def _state_tensor_stats(state: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _is_nuisance_checkpoint_payload(payload: dict[str, Any], state: dict[str, Any] | None = None) -> bool:
+    text = " ".join(
+        str(payload.get(field) or "").lower()
+        for field in ("checkpoint_kind", "model_version", "model_name", "checkpoint_format")
+    )
+    if "nuisance" in text:
+        return True
+    if not isinstance(state, dict):
+        state = _extract_state(payload, ("model_state_dict", "state_dict", "long256_model_state_dict", "long256_state_dict"))
+    if not isinstance(state, dict):
+        return False
+    keys = " ".join(str(key).lower() for key in state.keys())
+    return any(
+        token in keys
+        for token in (
+            "sns_nuisance_mask_head",
+            "global_degradation_head",
+            "reliability_head",
+            "nuisance",
+            "tamper_mask_head",
+        )
+    )
+
+
+def _infer_nuisance_base_channels(state: dict[str, Any], default: int = 16) -> int:
+    for suffix in ("stem.block.0.weight", "up1.weight", "class_head.2.weight"):
+        found = [(key, value) for key, value in state.items() if str(key).endswith(suffix)]
+        if not found:
+            continue
+        _key, value = found[0]
+        if hasattr(value, "shape") and value.shape:
+            if suffix == "class_head.2.weight" and len(value.shape) >= 2:
+                return max(1, int(value.shape[1]) // 6)
+            return int(value.shape[0])
+    return int(default)
+
+
 def _require_real_state_dict(state: dict[str, Any] | None, *, path: Path, label: str) -> dict[str, Any]:
     if not isinstance(state, dict):
         raise SNSAugV2CheckpointComparisonEvalError(f"{label} missing real model_state_dict/state_dict: {path}")
@@ -398,6 +438,30 @@ def _bundle_for_finetuned_checkpoint(
     long_state = _extract_state(payload, ("long256_model_state_dict", "long256_state_dict", "model_state_dict", "state_dict"))
     tile_state = _extract_state(payload, ("tile_v2_model_state_dict", "tile_v2_state_dict", "tile_model_state_dict"))
     delta: dict[str, Any] = {"long256": None, "tile_v2": None}
+
+    if _is_nuisance_checkpoint_payload(payload, long_state):
+        nuisance_stats = _require_real_state_dict(long_state, path=path, label="fine-tuned nuisance checkpoint")
+        bundle = {
+            "__comparison_model_type": "snsaug_v2_nuisance",
+            "checkpoint_path": str(path),
+            "payload": payload,
+            "state_dict": long_state,
+            "image_size": int(payload.get("image_size") or (payload.get("config") or {}).get("image_size") or 224),
+            "base_channels": int((payload.get("config") or {}).get("base_channels") or _infer_nuisance_base_channels(long_state)),
+            "gating_alpha": float((payload.get("config") or {}).get("gating_alpha") or 0.5),
+        }
+        checkpoint_info = {
+            **_checkpoint_metadata(path),
+            "checkpoint_kind": payload.get("checkpoint_kind"),
+            "checkpoint_format": payload.get("checkpoint_format"),
+            "model_version": payload.get("model_version"),
+            "weight_delta": {"nuisance": {"source": "native_nuisance_checkpoint", **nuisance_stats}},
+            "no_weight_delta": no_weight_delta,
+            "tensor_count": nuisance_stats.get("tensor_count"),
+            "tensor_total_numel": nuisance_stats.get("tensor_total_numel"),
+            "comparison_model_type": "snsaug_v2_nuisance",
+        }
+        return bundle, checkpoint_info
 
     if long_state is not None:
         long_stats = _require_real_state_dict(long_state, path=path, label="fine-tuned long256 checkpoint")
@@ -602,12 +666,35 @@ def _probability_adapter_diagnostics(
         "raw_output_keys": sorted(str(key) for key in raw.keys()),
         "record_keys": sorted(str(key) for key in (normalized_record or {}).keys()),
         "available_nested_keys": _nested_keys(raw),
+        "error": raw.get("error"),
+        "traceback": raw.get("traceback"),
         "sample": {
             "base_id": (source_row or raw).get("base_id"),
             "profile": (source_row or raw).get("profile"),
             "content_label": (source_row or raw).get("content_label"),
         },
     }
+
+
+def _record_error_rows(raw_records: list[dict[str, Any]], records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    errors: list[dict[str, Any]] = []
+    for raw, record in zip(raw_records, records):
+        if raw.get("error") is None and record.get("error") is None:
+            continue
+        errors.append(
+            {
+                "model_id": record.get("model_id"),
+                "base_id": record.get("base_id") or raw.get("base_id"),
+                "profile": record.get("profile") or raw.get("profile"),
+                "view": record.get("view") or raw.get("view"),
+                "content_label": record.get("content_label") or raw.get("content_label"),
+                "image_path": record.get("image_path") or raw.get("image_path"),
+                "error": raw.get("error") or record.get("error"),
+                "traceback": raw.get("traceback"),
+                "raw_output_keys": sorted(str(key) for key in raw.keys()),
+            }
+        )
+    return errors
 
 
 def _macro_f1(labels: list[str], preds: list[str]) -> float:
@@ -923,6 +1010,141 @@ def _mask_area_pct(path: Any) -> float | None:
         return None
 
 
+def _runtime_image_deps():
+    try:
+        from PIL import Image
+    except Exception as exc:
+        raise SNSAugV2CheckpointComparisonEvalError("PIL is required for nuisance checkpoint comparison inference") from exc
+    return Image
+
+
+def _image_tensor_for_nuisance(torch: Any, Image: Any, image_path: str, image_size: int, device: str):
+    with Image.open(str(image_path)) as image:
+        image = image.convert("RGB").resize((image_size, image_size))
+        raw = torch.ByteTensor(torch.ByteStorage.from_buffer(image.tobytes()))
+        return raw.reshape(1, image_size, image_size, 3).permute(0, 3, 1, 2).float().div(255.0).to(device)
+
+
+def _load_binary_mask_for_nuisance(Image: Any, path: Any, image_size: int) -> list[int] | None:
+    if not path:
+        return None
+    try:
+        with Image.open(str(path)) as image:
+            image = image.convert("L").resize((image_size, image_size))
+            return [1 if int(value) > 0 else 0 for value in image.getdata()]
+    except Exception:
+        return None
+
+
+def _load_nuisance_model(bundle: dict[str, Any], device: str):
+    torch = _torch_runtime()
+    try:
+        from .snsaug_v2_nuisance_model import build_snsaug_v2_nuisance_model
+    except Exception as exc:
+        raise SNSAugV2CheckpointComparisonEvalError("snsaug_v2_nuisance_model is required for nuisance checkpoint evaluation") from exc
+    state = bundle.get("state_dict")
+    if not isinstance(state, dict):
+        raise SNSAugV2CheckpointComparisonEvalError("nuisance checkpoint bundle missing state_dict")
+    model = build_snsaug_v2_nuisance_model(
+        torch,
+        base_channels=int(bundle.get("base_channels") or _infer_nuisance_base_channels(state)),
+        gating_alpha=float(bundle.get("gating_alpha") or 0.5),
+    ).to(device)
+    try:
+        model.load_state_dict(state)
+    except RuntimeError:
+        stripped = {str(key).removeprefix("module."): value for key, value in state.items()}
+        model.load_state_dict(stripped)
+    model.eval()
+    return torch, model
+
+
+def _nuisance_error_record(row: dict[str, Any], index: int, exc: BaseException, *, model_id: str) -> dict[str, Any]:
+    return {
+        "model_id": model_id,
+        "base_id": str(row.get("base_id") or f"row_{index:06d}"),
+        "content_label": _norm_label(row.get("content_label")),
+        "view": str(row.get("view") or ""),
+        "profile": str(row.get("profile") or ""),
+        "image_path": str(row.get("image_path") or ""),
+        "tamper_mask_path": str(row.get("tamper_mask_path")) if row.get("tamper_mask_path") else None,
+        "ignore_mask_path": str(row.get("ignore_mask_path")) if row.get("ignore_mask_path") else None,
+        "pred_class": None,
+        "p_real": None,
+        "p_synthetic": None,
+        "p_tampered": None,
+        "localization_activated": False,
+        "final_mask_area_pct": None,
+        "raw_iou": None,
+        "valid_iou": None,
+        "latency_ms": None,
+        "error": str(exc),
+        "traceback": "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
+    }
+
+
+def _evaluate_nuisance_model_records(
+    *,
+    model: dict[str, Any],
+    bundle: dict[str, Any],
+    config: dict[str, Any],
+    rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    device = "cuda" if str(config.get("device")) == "cuda" else "cpu"
+    image_size = int(bundle.get("image_size") or 224)
+    threshold = float(config.get("mask_threshold", 0.45))
+    Image = _runtime_image_deps()
+    try:
+        torch, nuisance_model = _load_nuisance_model(bundle, device)
+    except Exception as exc:
+        return [_nuisance_error_record(row, index, exc, model_id=str(model["model_id"])) for index, row in enumerate(rows)]
+    records: list[dict[str, Any]] = []
+    for index, row in enumerate(rows):
+        try:
+            started = time.perf_counter()
+            image_tensor = _image_tensor_for_nuisance(torch, Image, str(row["image_path"]), image_size, device)
+            with torch.no_grad():
+                outputs = nuisance_model(image_tensor)
+                class_logits = outputs["class_logits"][0].detach().cpu().tolist()
+                mask_prob = torch.sigmoid(outputs["tamper_mask_logits"][0, 0]).detach().cpu()
+            pred_mask = [1 if float(value) >= threshold else 0 for value in mask_prob.reshape(-1).tolist()]
+            gt_mask = _load_binary_mask_for_nuisance(Image, row.get("tamper_mask_path"), image_size)
+            ignore_mask = _load_binary_mask_for_nuisance(Image, row.get("ignore_mask_path"), image_size)
+            metrics = compute_mask_metrics(pred_mask, gt_mask, ignore_mask)
+            area_pct = float(sum(pred_mask) / max(len(pred_mask), 1) * 100.0)
+            records.append(
+                {
+                    "base_id": str(row.get("base_id") or f"row_{index:06d}"),
+                    "content_label": _norm_label(row.get("content_label")),
+                    "view": str(row.get("view") or ""),
+                    "profile": str(row.get("profile") or ""),
+                    "seed": row.get("seed"),
+                    "image_path": str(row.get("image_path")),
+                    "tamper_mask_path": str(row.get("tamper_mask_path")) if row.get("tamper_mask_path") else None,
+                    "ignore_mask_path": str(row.get("ignore_mask_path")) if row.get("ignore_mask_path") else None,
+                    "output": {"class_logits": class_logits},
+                    "localization_activated": area_pct > 0.0,
+                    "pred_mask_path": None,
+                    "pred_red_overlay_path": None,
+                    "gt_red_overlay_path": None,
+                    "ignore_blue_overlay_path": None,
+                    "overlap_overlay_path": None,
+                    "pred_mask_available": True,
+                    "final_mask_source": "snsaug_v2_nuisance_tamper_mask_head",
+                    "final_mask_area_pct": area_pct,
+                    "raw_iou": metrics["raw_iou"],
+                    "raw_dice": metrics["raw_dice"],
+                    "valid_iou": metrics["valid_iou"],
+                    "valid_dice": metrics["valid_dice"],
+                    "latency_ms": float((time.perf_counter() - started) * 1000.0),
+                    "error": None,
+                }
+            )
+        except Exception as exc:
+            records.append(_nuisance_error_record(row, index, exc, model_id=str(model["model_id"])))
+    return records
+
+
 def _normalize_record(row: dict[str, Any], model: dict[str, Any]) -> dict[str, Any]:
     label = _norm_label(row.get("content_label"))
     valid_iou = row.get("valid_iou") if label == "tampered" else None
@@ -983,7 +1205,10 @@ def _evaluate_model_records(
         "write_empty_pred_mask": bool(config.get("write_empty_pred_mask", True)),
         "mask_threshold": float(config.get("mask_threshold", 0.45)),
     }
-    raw_records = fixed_pair_evaluate_rows(bundle, fixed_config, rows)
+    if bundle.get("__comparison_model_type") == "snsaug_v2_nuisance":
+        raw_records = _evaluate_nuisance_model_records(model=model, bundle=bundle, config=config, rows=rows)
+    else:
+        raw_records = fixed_pair_evaluate_rows(bundle, fixed_config, rows)
     pair_root = _real(config["pair_root"])
     for raw_record, source_row in zip(raw_records, rows):
         for field in ("row_id", "record_id", "sample_id", "image_relpath"):
@@ -995,6 +1220,23 @@ def _evaluate_model_records(
             except ValueError:
                 pass
     records = [_normalize_record(row, model) for row in raw_records]
+    error_rows = _record_error_rows(raw_records, records)
+    if error_rows:
+        _write_jsonl(output_root / "model_eval_record_errors.jsonl", error_rows)
+        first = 0
+        _write_json(
+            output_root / "probability_adapter_diagnostics.json",
+            _probability_adapter_diagnostics(
+                model=model,
+                raw_record=raw_records[first] if first < len(raw_records) else None,
+                normalized_record=records[first] if first < len(records) else None,
+                source_row=rows[first] if first < len(rows) else None,
+            ),
+        )
+        _write_jsonl(output_root / "model_eval_records.jsonl", records)
+        if not bool(config.get("continue_on_record_error", False)):
+            raise SNSAugV2CheckpointComparisonEvalError(f"model {model['model_id']} produced inference errors; see model_eval_record_errors.jsonl")
+        records = [record for record in records if record.get("error") is None and record.get("p_tampered") is not None]
     missing_indexes = [index for index, record in enumerate(records) if record.get("p_tampered") is None]
     if missing_indexes:
         first = missing_indexes[0]
