@@ -114,7 +114,10 @@ def safe_config(root: Path) -> dict[str, object]:
         "lambda_gating_consistency": 0.5,
         "gating_alpha": 0.5,
         "p_tampered_ceiling": 0.05,
-        "max_steps": 1,
+        "max_steps_per_phase": 1,
+        "phase_1_max_steps": 1,
+        "phase_2_max_steps": 1,
+        "phase_3_max_steps": 1,
         "base_channels": 2,
         "image_size": 16,
         "enable_real_training": False,
@@ -122,6 +125,13 @@ def safe_config(root: Path) -> dict[str, object]:
         "no_network": True,
         "no_download": True,
     }
+
+
+def phase_counts(rows: list[dict[str, object]]) -> dict[int, int]:
+    counts = {1: 0, 2: 0, 3: 0}
+    for row in rows:
+        counts[int(row["phase"])] += 1
+    return counts
 
 
 def test_example_config_validates() -> None:
@@ -213,7 +223,18 @@ def test_tiny_real_run_writes_checkpoints() -> None:
         assert_true(path.exists(), f"{key} exists")
         assert_true(not str(path).startswith(str(REPO_ROOT)), f"{key} outside repo")
     rows = [json.loads(line) for line in Path(paths["training_log"]).read_text(encoding="utf-8").splitlines()]
-    assert_true(rows and float(rows[0]["total_loss"]) >= 0.0, "finite training log")
+    assert_true(len(rows) >= 3, "1x3 training log rows")
+    assert_equal(phase_counts(rows), {1: 1, 2: 1, 3: 1}, "1x3 phase counts")
+    for key in (
+        "class_loss",
+        "tamper_mask_loss",
+        "sns_nuisance_mask_loss",
+        "global_degradation_loss",
+        "hardneg_loss",
+        "clean_sns_class_consistency_loss",
+        "total_loss",
+    ):
+        assert_true(key in rows[0] and float(rows[0][key]) >= 0.0, f"{key} logged")
     import torch
 
     for key in ("best_checkpoint", "last_checkpoint"):
@@ -221,6 +242,29 @@ def test_tiny_real_run_writes_checkpoints() -> None:
         assert_true("model_state_dict" in payload, f"{key} has model_state_dict")
         stats = validate_real_checkpoint_payload(payload)
         assert_true(stats["tensor_count"] > 0, f"{key} real tensors")
+        assert_true(int(payload["global_step"]) >= 3, f"{key} global_step")
+        assert_equal(int(payload["phase"]), 3, f"{key} final phase")
+
+
+def test_phase_steps_2x3_are_honored() -> None:
+    root = temp_root("cvf_0064d_2x3_")
+    cfg = safe_config(root)
+    cfg["approval_text"] = APPROVAL_TEXT
+    cfg["phase_1_max_steps"] = 2
+    cfg["phase_2_max_steps"] = 2
+    cfg["phase_3_max_steps"] = 2
+    summary = run_snsaug_v2_nuisance_finetune(cfg, dry_run=False)
+    rows = [json.loads(line) for line in Path(summary["output_paths"]["training_log"]).read_text(encoding="utf-8").splitlines()]
+    assert_true(len(rows) >= 6, "2x3 training log rows")
+    assert_equal(phase_counts(rows), {1: 2, 2: 2, 3: 2}, "2x3 phase counts")
+    artifact = json.loads(Path(summary["output_paths"]["artifact_manifest"]).read_text(encoding="utf-8"))
+    assert_equal(artifact["phase_counts"], {"1": 2, "2": 2, "3": 2}, "artifact phase counts")
+    import torch
+
+    payload = torch.load(summary["output_paths"]["last_checkpoint"], map_location="cpu")
+    assert_true("model_state_dict" in payload, "last checkpoint has model_state_dict")
+    assert_true(int(payload["global_step"]) >= 6, "checkpoint global_step")
+    assert_equal(payload["metrics"]["phase_counts"], {"1": 2, "2": 2, "3": 2}, "checkpoint phase counts")
 
 
 def test_docs_marker_present() -> None:
@@ -236,6 +280,7 @@ def main() -> int:
         test_guardrails_reject_leakage_and_flags,
         test_dry_run_and_approval,
         test_tiny_real_run_writes_checkpoints,
+        test_phase_steps_2x3_are_honored,
         test_docs_marker_present,
     ]
     for test in tests:

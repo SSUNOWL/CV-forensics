@@ -29,3 +29,13 @@ Training remains guarded. A dry-run validates the config and prints planned outp
 - output and checkpoint roots outside the repository
 
 Validation or fixed-pair evaluation roots must not be used as training input. Checkpoints must contain real `model_state_dict` weights; proxy-only `trainable_state` payloads are invalid.
+
+## Phase Steps
+
+Actual training honors the three phase controls:
+
+- `phase_1_max_steps`
+- `phase_2_max_steps`
+- `phase_3_max_steps`
+
+If a phase-specific value is omitted, `max_steps_per_phase` is used as the default. A 5x3 audit must write at least 15 `training_log.jsonl` rows with phase counts `{1: 5, 2: 5, 3: 5}`. A 30x3 run must write at least 90 rows with phase counts `{1: 30, 2: 30, 3: 30}`. The artifact manifest and best/last checkpoints record the final `global_step` and `phase_counts`.

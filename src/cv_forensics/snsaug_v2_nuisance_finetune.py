@@ -50,6 +50,11 @@ CHECKPOINT_NAMES = {
     "best": "snsaug_aware_multihead_forensics_v1_best.pt",
     "last": "snsaug_aware_multihead_forensics_v1_last.pt",
 }
+PHASES = (
+    {"phase": 1, "name": "nuisance_head_warmup"},
+    {"phase": 2, "name": "mask_guided_tamper_gating"},
+    {"phase": 3, "name": "balanced_nuisance_correction"},
+)
 REQUIRED_OUTPUTS = [
     "training_log.jsonl",
     "loss_breakdown.json",
@@ -158,7 +163,7 @@ def validate_snsaug_v2_nuisance_finetune_config(raw: dict[str, Any], require_exi
     ):
         value = raw.get(field, default)
         errors.extend(_validate_numeric(value, field, minimum=0.0, maximum=1.0 if field in {"gating_alpha", "p_tampered_ceiling"} else None))
-    for field in ("max_steps", "phase_1_max_steps", "phase_2_max_steps", "phase_3_max_steps"):
+    for field in ("max_steps", "max_steps_per_phase", "phase_1_max_steps", "phase_2_max_steps", "phase_3_max_steps"):
         if field in raw:
             value = raw.get(field)
             if isinstance(value, bool) or not isinstance(value, int) or value < 1 or value > 500:
@@ -254,6 +259,10 @@ def build_nuisance_finetune_plan(config: dict[str, Any]) -> dict[str, Any]:
             "lambda_gating_consistency": float(config.get("lambda_gating_consistency", 0.5)),
         },
         "required_outputs": REQUIRED_OUTPUTS,
+        "phases": [
+            {**phase, "max_steps": _phase_steps(config)[int(phase["phase"])]}
+            for phase in PHASES
+        ],
         "planned_output_paths": planned_output_paths(config["output_root"], config["checkpoint_root"]),
         "train_split_only": True,
         "evaluation_pairs_for_training": False,
@@ -339,8 +348,13 @@ def _finite(value: Any, field: str) -> float:
     return number
 
 
-def _steps(config: dict[str, Any]) -> int:
-    return int(config.get("max_steps", config.get("phase_1_max_steps", 1)))
+def _phase_steps(config: dict[str, Any]) -> dict[int, int]:
+    default = int(config.get("max_steps_per_phase", config.get("max_steps", 1)))
+    return {
+        1: int(config.get("phase_1_max_steps", default)),
+        2: int(config.get("phase_2_max_steps", default)),
+        3: int(config.get("phase_3_max_steps", default)),
+    }
 
 
 def _checkpoint_payload(
@@ -375,6 +389,15 @@ def _checkpoint_payload(
 def _mean(rows: list[dict[str, Any]], key: str) -> float:
     values = [float(row[key]) for row in rows if key in row]
     return sum(values) / len(values) if values else 0.0
+
+
+def _phase_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
+    counts = {"1": 0, "2": 0, "3": 0}
+    for row in rows:
+        phase = str(row.get("phase"))
+        if phase in counts:
+            counts[phase] += 1
+    return counts
 
 
 def _mask_iou(torch: Any, pred: Any, target: Any) -> float:
@@ -417,31 +440,39 @@ def run_snsaug_v2_nuisance_finetune(config: dict[str, Any], *, dry_run: bool = F
         "lambda_gating_consistency": float(config.get("lambda_gating_consistency", 0.5)),
     }
     log_rows: list[dict[str, Any]] = []
+    per_phase_records: list[dict[str, Any]] = []
+    phase_steps = _phase_steps(config)
+    global_step = 0
     model.train()
-    for step in range(1, _steps(config) + 1):
-        row = rows[(step - 1) % len(rows)]
-        batch = _synthetic_nuisance_batch(torch, image_size, row, device)
-        clean_outputs = model(batch["clean_images"], sns_nuisance_mask=torch.zeros_like(batch["ignore_mask"]), use_teacher_sns_mask=True)
-        outputs = model(
-            batch["sns_images"],
-            sns_nuisance_mask=batch["sns_nuisance_mask"],
-            use_teacher_sns_mask=bool(step % 2),
-        )
-        batch["clean_class_logits"] = clean_outputs["class_logits"].detach()
-        batch["p_tampered_ceiling"] = float(config.get("p_tampered_ceiling", 0.05))
-        losses = total_nuisance_loss(outputs, batch, weights=weights)
-        total_loss = losses["total_loss"]
-        optimizer.zero_grad(set_to_none=True)
-        total_loss.backward()
-        optimizer.step()
-        probs = outputs["class_logits"].detach().softmax(dim=-1)[0]
-        sns_mask_prob = outputs["sns_nuisance_mask_logits"].detach().sigmoid()
-        tamper_mask_prob = outputs["tamper_mask_logits"].detach().sigmoid()
-        log_rows.append(
-            {
+    for phase_info in PHASES:
+        phase = int(phase_info["phase"])
+        phase_log_rows: list[dict[str, Any]] = []
+        for phase_step in range(1, phase_steps[phase] + 1):
+            row = rows[global_step % len(rows)]
+            batch = _synthetic_nuisance_batch(torch, image_size, row, device)
+            clean_outputs = model(batch["clean_images"], sns_nuisance_mask=torch.zeros_like(batch["ignore_mask"]), use_teacher_sns_mask=True)
+            outputs = model(
+                batch["sns_images"],
+                sns_nuisance_mask=batch["sns_nuisance_mask"],
+                use_teacher_sns_mask=bool(global_step % 2),
+            )
+            batch["clean_class_logits"] = clean_outputs["class_logits"].detach()
+            batch["p_tampered_ceiling"] = float(config.get("p_tampered_ceiling", 0.05))
+            losses = total_nuisance_loss(outputs, batch, weights=weights)
+            total_loss = losses["total_loss"]
+            optimizer.zero_grad(set_to_none=True)
+            total_loss.backward()
+            optimizer.step()
+            global_step += 1
+            probs = outputs["class_logits"].detach().softmax(dim=-1)[0]
+            sns_mask_prob = outputs["sns_nuisance_mask_logits"].detach().sigmoid()
+            tamper_mask_prob = outputs["tamper_mask_logits"].detach().sigmoid()
+            log_row = {
                 "marker": MARKER,
-                "phase": 1,
-                "step": step,
+                "phase": phase,
+                "phase_name": phase_info["name"],
+                "step": global_step,
+                "phase_step": phase_step,
                 "profile": batch["profile"],
                 "content_label": batch["content_label"],
                 "total_loss": _finite(total_loss.detach().cpu().item(), "total_loss"),
@@ -454,6 +485,18 @@ def run_snsaug_v2_nuisance_finetune(config: dict[str, Any], *, dry_run: bool = F
                 "p_tampered": _finite(probs[CLASS_TO_INDEX["tampered"]].item(), "p_tampered"),
                 "sns_nuisance_mask_iou": _finite(_mask_iou(torch, sns_mask_prob, batch["sns_nuisance_mask"]), "sns_iou"),
                 "tampered_valid_mean_iou": _finite(_mask_iou(torch, tamper_mask_prob * (1.0 - batch["ignore_mask"]), batch["tamper_mask"]), "tamper_iou"),
+            }
+            log_rows.append(log_row)
+            phase_log_rows.append(log_row)
+        per_phase_records.append(
+            {
+                "phase": phase,
+                "phase_name": phase_info["name"],
+                "requested_steps": phase_steps[phase],
+                "executed_steps": len(phase_log_rows),
+                "mean_total_loss": _mean(phase_log_rows, "total_loss"),
+                "mean_class_loss": _mean(phase_log_rows, "class_loss"),
+                "mean_sns_nuisance_mask_loss": _mean(phase_log_rows, "sns_nuisance_mask_loss"),
             }
         )
 
@@ -468,16 +511,21 @@ def run_snsaug_v2_nuisance_finetune(config: dict[str, Any], *, dry_run: bool = F
         "degradation_type_macro_f1": 0.5,
         "threshold_sweep_candidate_count": 1,
     }
-    best_payload = _checkpoint_payload(model=model, optimizer=optimizer, global_step=len(log_rows), phase=1, config=config, metrics=metrics, base_bundle=base_bundle)
-    last_payload = _checkpoint_payload(model=model, optimizer=optimizer, global_step=len(log_rows), phase=1, config=config, metrics=metrics, base_bundle=base_bundle)
+    phase_counts = _phase_counts(log_rows)
+    checkpoint_metrics = {**metrics, "phase_counts": phase_counts}
+    best_payload = _checkpoint_payload(model=model, optimizer=optimizer, global_step=global_step, phase=3, config=config, metrics=checkpoint_metrics, base_bundle=base_bundle)
+    last_payload = _checkpoint_payload(model=model, optimizer=optimizer, global_step=global_step, phase=3, config=config, metrics=checkpoint_metrics, base_bundle=base_bundle)
     best_path = Path(paths["best_checkpoint"])
     last_path = Path(paths["last_checkpoint"])
     torch.save(best_payload, best_path)
     torch.save(last_payload, last_path)
     output_paths = {
         "training_log": _write_jsonl(Path(paths["training_log"]), log_rows),
-        "loss_breakdown": _write_json(Path(paths["loss_breakdown"]), {"marker": MARKER, "step_count": len(log_rows), "mean_total_loss": _mean(log_rows, "total_loss")}),
-        "per_phase_metrics": _write_json(Path(paths["per_phase_metrics"]), {"marker": MARKER, "phases": [{"phase": 1, "metrics": metrics}]}),
+        "loss_breakdown": _write_json(
+            Path(paths["loss_breakdown"]),
+            {"marker": MARKER, "step_count": len(log_rows), "phase_counts": phase_counts, "mean_total_loss": _mean(log_rows, "total_loss")},
+        ),
+        "per_phase_metrics": _write_json(Path(paths["per_phase_metrics"]), {"marker": MARKER, "phases": per_phase_records, "phase_counts": phase_counts}),
         "clean_validation_metrics": _write_json(Path(paths["clean_validation_metrics"]), {"marker": MARKER, "eval_subset_only": True, "full_evaluation_ran": False, "macro_f1": metrics["macro_f1"]}),
         "snsaug_0058c_metrics": _write_json(Path(paths["snsaug_0058c_metrics"]), {"marker": MARKER, "eval_subset_only": True, "full_evaluation_ran": False, **metrics}),
         "threshold_sweep_after_training": _write_json(Path(paths["threshold_sweep_after_training"]), {"marker": MARKER, "candidate_count": 1, "metrics": metrics}),
@@ -491,6 +539,8 @@ def run_snsaug_v2_nuisance_finetune(config: dict[str, Any], *, dry_run: bool = F
         "checkpoint_written": True,
         "checkpoint_kind": CHECKPOINT_KIND_REAL_WEIGHTS,
         "model_version": MODEL_VERSION,
+        "global_step": global_step,
+        "phase_counts": phase_counts,
         "best_checkpoint_path": str(best_path),
         "last_checkpoint_path": str(last_path),
         "best_checkpoint_sha256": _sha256_file(best_path),
@@ -507,7 +557,8 @@ def run_snsaug_v2_nuisance_finetune(config: dict[str, Any], *, dry_run: bool = F
         "output_paths": output_paths,
         "best_checkpoint_path": str(best_path),
         "last_checkpoint_path": str(last_path),
-        "global_step": len(log_rows),
+        "global_step": global_step,
+        "phase_counts": phase_counts,
     }
 
 
