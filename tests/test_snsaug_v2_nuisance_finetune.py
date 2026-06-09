@@ -19,6 +19,7 @@ from cv_forensics.pre_sns_v3_model import build_pre_sns_v3_model  # noqa: E402
 from cv_forensics.snsaug_v2_nuisance_finetune import (  # noqa: E402
     APPROVAL_TEXT,
     MARKER,
+    collapse_guard_from_records,
     load_snsaug_v2_nuisance_finetune_config,
     run_snsaug_v2_nuisance_finetune,
     validate_real_checkpoint_payload,
@@ -26,6 +27,7 @@ from cv_forensics.snsaug_v2_nuisance_finetune import (  # noqa: E402
 )
 from cv_forensics.snsaug_v2_nuisance_losses import (  # noqa: E402
     degradation_label_from_profile,
+    non_tampered_mask_suppression_loss,
     sns_nuisance_mask_loss,
     sns_nuisance_mask_target,
     valid_tamper_mask_loss,
@@ -112,8 +114,15 @@ def safe_config(root: Path) -> dict[str, object]:
         "lambda_hardneg": 1.0,
         "lambda_tamper_mask": 1.0,
         "lambda_gating_consistency": 0.5,
+        "lambda_non_tampered_mask_suppression": 1.0,
+        "lambda_mask_area_regularization": 0.1,
         "gating_alpha": 0.5,
+        "phase_2_gating_alpha_max": 0.2,
+        "phase_3_gating_alpha_max": 0.3,
         "p_tampered_ceiling": 0.05,
+        "min_warm_start_loaded_numel_ratio": 0.1,
+        "allow_partial_warm_start": False,
+        "allow_joint_tuning": False,
         "max_steps_per_phase": 1,
         "phase_1_max_steps": 1,
         "phase_2_max_steps": 1,
@@ -168,6 +177,18 @@ def test_mask_losses_and_gating() -> None:
     features = torch.ones((1, 2, 4, 4))
     gated = apply_soft_nuisance_gate(features, ignore, alpha=0.5)
     assert_true(float(gated[:, :, :1, :].mean().item()) < float(gated[:, :, 1:, :].mean().item()), "gating reduces SNS areas")
+    all_one = torch.ones((2, 1, 4, 4))
+    suppression = non_tampered_mask_suppression_loss(all_one, torch.tensor([0, 1]))
+    tampered_only = non_tampered_mask_suppression_loss(all_one, torch.tensor([2, 2]))
+    assert_true(float(suppression) > 0.0, "non-tampered all-one masks penalized")
+    assert_equal(float(tampered_only), 0.0, "tampered masks not suppressed by hard-negative mask loss")
+
+
+def test_collapse_guard_detects_single_class_predictions() -> None:
+    collapsed = collapse_guard_from_records([{"pred_class": "tampered"}, {"pred_class": "tampered"}, {"pred_class": "tampered"}])
+    mixed = collapse_guard_from_records([{"pred_class": "real"}, {"pred_class": "synthetic"}, {"pred_class": "tampered"}])
+    assert_true(collapsed["single_class_prediction_collapse"] is True, "single-class collapse detected")
+    assert_true(mixed["single_class_prediction_collapse"] is False, "mixed predictions pass collapse guard")
 
 
 def test_guardrails_reject_leakage_and_flags() -> None:
@@ -218,13 +239,14 @@ def test_tiny_real_run_writes_checkpoints() -> None:
     assert_true(summary["training_started"] is True, "training started")
     assert_true(summary["checkpoint_written"] is True, "checkpoint written")
     paths = summary["output_paths"]
-    for key in ("training_log", "loss_breakdown", "per_phase_metrics", "clean_validation_metrics", "snsaug_0058c_metrics", "threshold_sweep_after_training", "artifact_manifest", "best_checkpoint", "last_checkpoint"):
+    for key in ("training_log", "warm_start_report", "loss_breakdown", "per_phase_metrics", "clean_validation_metrics", "snsaug_0058c_metrics", "threshold_sweep_after_training", "artifact_manifest", "best_checkpoint", "last_checkpoint"):
         path = Path(paths[key])
         assert_true(path.exists(), f"{key} exists")
         assert_true(not str(path).startswith(str(REPO_ROOT)), f"{key} outside repo")
     rows = [json.loads(line) for line in Path(paths["training_log"]).read_text(encoding="utf-8").splitlines()]
     assert_true(len(rows) >= 3, "1x3 training log rows")
     assert_equal(phase_counts(rows), {1: 1, 2: 1, 3: 1}, "1x3 phase counts")
+    assert_equal(float(rows[0]["gating_alpha_effective"]), 0.0, "phase 1 gating disabled")
     for key in (
         "class_loss",
         "tamper_mask_loss",
@@ -232,16 +254,25 @@ def test_tiny_real_run_writes_checkpoints() -> None:
         "global_degradation_loss",
         "hardneg_loss",
         "clean_sns_class_consistency_loss",
+        "non_tampered_mask_suppression_loss",
+        "mask_area_regularization_loss",
         "total_loss",
     ):
         assert_true(key in rows[0] and float(rows[0][key]) >= 0.0, f"{key} logged")
+    warm = json.loads(Path(paths["warm_start_report"]).read_text(encoding="utf-8"))
+    assert_true(warm["loaded_numel"] > 0, "warm-start loaded weights")
+    assert_true(warm["total_numel"] >= warm["loaded_numel"], "warm-start report total numel")
     import torch
 
+    artifact = json.loads(Path(paths["artifact_manifest"]).read_text(encoding="utf-8"))
+    assert_true(artifact["warm_start_loaded_numel"] > 0, "artifact warm-start numel")
+    assert_true(artifact["tensor_total_numel"] >= artifact["warm_start_loaded_numel"], "checkpoint tensor count comparable")
     for key in ("best_checkpoint", "last_checkpoint"):
         payload = torch.load(paths[key], map_location="cpu")
         assert_true("model_state_dict" in payload, f"{key} has model_state_dict")
         stats = validate_real_checkpoint_payload(payload)
         assert_true(stats["tensor_count"] > 0, f"{key} real tensors")
+        assert_true(stats["tensor_total_numel"] >= warm["loaded_numel"], f"{key} tensor_total_numel comparable")
         assert_true(int(payload["global_step"]) >= 3, f"{key} global_step")
         assert_equal(int(payload["phase"]), 3, f"{key} final phase")
 
@@ -277,6 +308,7 @@ def main() -> int:
         test_example_config_validates,
         test_nuisance_mask_target_and_jpeg_only_profile,
         test_mask_losses_and_gating,
+        test_collapse_guard_detects_single_class_predictions,
         test_guardrails_reject_leakage_and_flags,
         test_dry_run_and_approval,
         test_tiny_real_run_writes_checkpoints,

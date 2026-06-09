@@ -6,6 +6,7 @@ import math
 from typing import Any
 
 from .snsaug_v2_losses import (
+    CLASS_TO_INDEX,
     class_cross_entropy_loss,
     clean_sns_non_tampered_class_consistency_loss,
     non_tampered_tampered_suppression_loss,
@@ -94,13 +95,56 @@ def global_degradation_loss(logits: Any, targets: Any, reduction: str = "mean"):
     return total / max(count, 1)
 
 
+def non_tampered_mask_suppression_loss(pred_mask: Any, labels: Any, reduction: str = "mean"):
+    """Penalize real/synthetic rows that produce large tamper masks."""
+
+    torch, _F = _torch_modules()
+    if torch is not None and hasattr(pred_mask, "shape"):
+        target = labels if hasattr(labels, "shape") else torch.tensor([CLASS_TO_INDEX[str(label)] for label in labels], device=pred_mask.device)
+        mask = (target.long() != CLASS_TO_INDEX["tampered"]).float().view(-1, 1, 1, 1)
+        per_sample = pred_mask.float().mean(dim=(1, 2, 3)).pow(2) * mask.view(-1)
+        if reduction == "sum":
+            return per_sample.sum()
+        if reduction == "none":
+            return per_sample
+        return per_sample.sum() / mask.view(-1).sum().clamp(min=1.0)
+    losses = []
+    label_values = labels if isinstance(labels, (list, tuple)) else [labels]
+    for pred, label in zip(pred_mask, label_values):
+        if str(label) == "tampered" or int(label) == CLASS_TO_INDEX["tampered"]:
+            losses.append(0.0)
+            continue
+        flat = [float(value) for row in pred for value in (row if isinstance(row, (list, tuple)) else [row])]
+        mean_area = sum(flat) / max(len(flat), 1)
+        losses.append(mean_area * mean_area)
+    return sum(losses) / max(len(losses), 1)
+
+
+def mask_area_regularization_loss(pred_mask: Any, reduction: str = "mean"):
+    """Discourage all-one tamper masks without preventing true tamper activation."""
+
+    torch, _F = _torch_modules()
+    if torch is not None and hasattr(pred_mask, "shape"):
+        per_sample = pred_mask.float().mean(dim=(1, 2, 3)).pow(2)
+        if reduction == "sum":
+            return per_sample.sum()
+        if reduction == "none":
+            return per_sample
+        return per_sample.mean()
+    flat = [float(value) for row in pred_mask for value in (row if isinstance(row, (list, tuple)) else [row])]
+    mean_area = sum(flat) / max(len(flat), 1)
+    return mean_area * mean_area
+
+
 def total_nuisance_loss(outputs: dict[str, Any], batch: dict[str, Any], *, weights: dict[str, float]) -> dict[str, Any]:
     """Compute finite 0064 loss components."""
 
     class_loss = class_cross_entropy_loss(outputs["class_logits"], batch["class_targets"])
     tamper_prob = outputs["tamper_mask_logits"].sigmoid() if hasattr(outputs["tamper_mask_logits"], "sigmoid") else outputs["tamper_mask_logits"]
     sns_prob = outputs["sns_nuisance_mask_logits"].sigmoid() if hasattr(outputs["sns_nuisance_mask_logits"], "sigmoid") else outputs["sns_nuisance_mask_logits"]
-    tamper_mask_loss = valid_tamper_mask_loss(tamper_prob, batch["tamper_mask"], batch["ignore_mask"])
+    tamper_mask_loss_raw = valid_tamper_mask_loss(tamper_prob, batch["tamper_mask"], batch["ignore_mask"])
+    is_tampered = (batch["class_targets"].long() == CLASS_TO_INDEX["tampered"]).float().mean() if hasattr(batch["class_targets"], "shape") else 1.0
+    tamper_mask_loss = tamper_mask_loss_raw * is_tampered
     nuisance_loss = sns_nuisance_mask_loss(sns_prob, batch["sns_nuisance_mask"])
     degradation_loss = global_degradation_loss(outputs["global_degradation_logits"], batch["degradation_targets"])
     consistency_loss = clean_sns_non_tampered_class_consistency_loss(batch["clean_class_logits"], outputs["class_logits"], batch["class_targets"])
@@ -109,6 +153,8 @@ def total_nuisance_loss(outputs: dict[str, Any], batch: dict[str, Any], *, weigh
         batch["class_targets"],
         ceiling=float(batch.get("p_tampered_ceiling", 0.05)),
     )
+    mask_suppression_loss = non_tampered_mask_suppression_loss(tamper_prob, batch["class_targets"])
+    mask_area_loss = mask_area_regularization_loss(tamper_prob)
     total = (
         class_loss
         + float(weights.get("lambda_tamper_mask", 1.0)) * tamper_mask_loss
@@ -116,6 +162,8 @@ def total_nuisance_loss(outputs: dict[str, Any], batch: dict[str, Any], *, weigh
         + float(weights.get("lambda_degradation", 0.3)) * degradation_loss
         + float(weights.get("lambda_gating_consistency", 0.5)) * consistency_loss
         + float(weights.get("lambda_hardneg", 1.0)) * hardneg_loss
+        + float(weights.get("lambda_non_tampered_mask_suppression", 1.0)) * mask_suppression_loss
+        + float(weights.get("lambda_mask_area_regularization", 0.1)) * mask_area_loss
     )
     return {
         "total_loss": total,
@@ -125,12 +173,16 @@ def total_nuisance_loss(outputs: dict[str, Any], batch: dict[str, Any], *, weigh
         "global_degradation_loss": degradation_loss,
         "clean_sns_class_consistency_loss": consistency_loss,
         "hardneg_loss": hardneg_loss,
+        "non_tampered_mask_suppression_loss": mask_suppression_loss,
+        "mask_area_regularization_loss": mask_area_loss,
     }
 
 
 __all__ = [
     "degradation_label_from_profile",
     "global_degradation_loss",
+    "mask_area_regularization_loss",
+    "non_tampered_mask_suppression_loss",
     "sns_nuisance_mask_loss",
     "sns_nuisance_mask_target",
     "total_nuisance_loss",
