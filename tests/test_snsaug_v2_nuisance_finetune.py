@@ -19,6 +19,8 @@ from cv_forensics.pre_sns_v3_model import build_pre_sns_v3_model  # noqa: E402
 from cv_forensics.snsaug_v2_nuisance_finetune import (  # noqa: E402
     APPROVAL_TEXT,
     MARKER,
+    best_checkpoint_guard,
+    build_class_balanced_sampling_preview,
     collapse_guard_from_records,
     load_snsaug_v2_nuisance_finetune_config,
     run_snsaug_v2_nuisance_finetune,
@@ -30,6 +32,7 @@ from cv_forensics.snsaug_v2_nuisance_losses import (  # noqa: E402
     non_tampered_mask_suppression_loss,
     sns_nuisance_mask_loss,
     sns_nuisance_mask_target,
+    synthetic_preservation_loss,
     valid_tamper_mask_loss,
 )
 from cv_forensics.snsaug_v2_nuisance_model import apply_soft_nuisance_gate  # noqa: E402
@@ -78,6 +81,18 @@ def write_fixture(root: Path) -> tuple[Path, Path, Path, Path]:
         },
         base_checkpoint,
     )
+    tamper_checkpoint = model_root / "tamper_warm.pt"
+    tamper_state = model.state_dict()
+    for key in list(tamper_state):
+        if key.startswith("mask_head.") and key.endswith("bias"):
+            tamper_state[key] = tamper_state[key] + 0.125
+    torch.save(
+        {
+            "checkpoint_kind": "pre_sns_tamper_head_fixture",
+            "model_state_dict": tamper_state,
+        },
+        tamper_checkpoint,
+    )
     bundle = model_root / "bundle.json"
     bundle.write_text(json.dumps({"long256_checkpoint_path": str(base_checkpoint)}), encoding="utf-8")
     clean_val = eval_root / "clean_validation_manifest.jsonl"
@@ -100,6 +115,8 @@ def safe_config(root: Path) -> dict[str, object]:
         "no_training_from_scratch": True,
         "training_manifest_path": str(manifest),
         "base_model_bundle_path": str(bundle),
+        "class_backbone_warm_start_path": str(bundle),
+        "tamper_head_warm_start_path": str(root / "models" / "tamper_warm.pt"),
         "clean_validation_manifest_path": str(clean_val),
         "evaluation_pair_root_0058c": str(pair_root),
         "approved_train_manifest_roots": [str(root / "train")],
@@ -111,15 +128,19 @@ def safe_config(root: Path) -> dict[str, object]:
         "checkpoint_root": str(root / "ckpts" / "nuisance"),
         "lambda_sns_mask": 1.0,
         "lambda_degradation": 0.3,
-        "lambda_hardneg": 1.0,
+        "lambda_hardneg": 2.0,
+        "lambda_non_tampered_tampered_suppression": 2.0,
+        "lambda_synthetic_preservation": 2.0,
         "lambda_tamper_mask": 1.0,
-        "lambda_gating_consistency": 0.5,
+        "lambda_gating_consistency": 1.0,
+        "lambda_class_preservation": 1.0,
         "lambda_non_tampered_mask_suppression": 1.0,
         "lambda_mask_area_regularization": 0.1,
         "gating_alpha": 0.5,
-        "phase_2_gating_alpha_max": 0.2,
-        "phase_3_gating_alpha_max": 0.3,
+        "phase_2_gating_alpha_max": 0.15,
+        "phase_3_gating_alpha_max": 0.25,
         "p_tampered_ceiling": 0.05,
+        "synthetic_probability_floor": 0.35,
         "min_warm_start_loaded_numel_ratio": 0.1,
         "require_warm_start_loaded_numel_ratio_gte": 0.0,
         "allow_partial_warm_start": False,
@@ -183,6 +204,46 @@ def test_mask_losses_and_gating() -> None:
     tampered_only = non_tampered_mask_suppression_loss(all_one, torch.tensor([2, 2]))
     assert_true(float(suppression) > 0.0, "non-tampered all-one masks penalized")
     assert_equal(float(tampered_only), 0.0, "tampered masks not suppressed by hard-negative mask loss")
+    low_synthetic = synthetic_preservation_loss(torch.tensor([[3.0, -3.0, 0.0]]), torch.tensor([1]), floor=0.35)
+    high_synthetic = synthetic_preservation_loss(torch.tensor([[0.0, 4.0, 0.0]]), torch.tensor([1]), floor=0.35)
+    real_loss = synthetic_preservation_loss(torch.tensor([[3.0, -3.0, 0.0]]), torch.tensor([0]), floor=0.35)
+    assert_true(float(low_synthetic) > 0.0, "low synthetic probability penalized")
+    assert_equal(float(high_synthetic), 0.0, "high synthetic probability not penalized")
+    assert_equal(float(real_loss), 0.0, "synthetic preservation applies only to synthetic rows")
+
+
+def test_class_balanced_sampling_and_best_guard() -> None:
+    rows = [
+        {"content_label": "tampered"},
+        {"content_label": "tampered"},
+        {"content_label": "real"},
+        {"content_label": "synthetic"},
+    ]
+    preview = build_class_balanced_sampling_preview(rows, 6)
+    assert_equal(preview[:3], ["real", "synthetic", "tampered"], "balanced sampler cycles classes")
+    assert_true("synthetic" in preview, "balanced sampler includes synthetic rows")
+    rejected = best_checkpoint_guard(
+        {
+            "synthetic_recall": 0.0,
+            "tampered_recall": 1.0,
+            "tampered_valid_mean_iou": 1.0,
+            "real_fpr": 0.0,
+            "non_tampered_high_mask_rate": 0.0,
+            "single_class_prediction_collapse": False,
+        }
+    )
+    accepted = best_checkpoint_guard(
+        {
+            "synthetic_recall": 0.5,
+            "tampered_recall": 0.6,
+            "tampered_valid_mean_iou": 0.7,
+            "real_fpr": 0.1,
+            "non_tampered_high_mask_rate": 0.0,
+            "single_class_prediction_collapse": False,
+        }
+    )
+    assert_true(rejected["passes_best_guardrails"] is False, "synthetic_recall=0 rejected")
+    assert_true(accepted["passes_best_guardrails"] is True, "balanced guard accepts non-collapsed checkpoint")
 
 
 def test_collapse_guard_detects_single_class_predictions() -> None:
@@ -241,7 +302,7 @@ def test_tiny_real_run_writes_checkpoints() -> None:
     assert_true(summary["training_started"] is True, "training started")
     assert_true(summary["checkpoint_written"] is True, "checkpoint written")
     paths = summary["output_paths"]
-    for key in ("training_log", "warm_start_report", "loss_breakdown", "per_phase_metrics", "clean_validation_metrics", "snsaug_0058c_metrics", "threshold_sweep_after_training", "artifact_manifest", "best_checkpoint", "last_checkpoint"):
+    for key in ("training_log", "warm_start_report", "hybrid_warm_start_report", "loss_breakdown", "per_phase_metrics", "clean_validation_metrics", "snsaug_0058c_metrics", "threshold_sweep_after_training", "artifact_manifest", "best_checkpoint", "last_checkpoint"):
         path = Path(paths[key])
         assert_true(path.exists(), f"{key} exists")
         assert_true(not str(path).startswith(str(REPO_ROOT)), f"{key} outside repo")
@@ -255,6 +316,7 @@ def test_tiny_real_run_writes_checkpoints() -> None:
         "sns_nuisance_mask_loss",
         "global_degradation_loss",
         "hardneg_loss",
+        "synthetic_preservation_loss",
         "clean_sns_class_consistency_loss",
         "non_tampered_mask_suppression_loss",
         "mask_area_regularization_loss",
@@ -270,6 +332,10 @@ def test_tiny_real_run_writes_checkpoints() -> None:
     assert_equal(round(warm["loaded_ratio"], 8), round(warm["loaded_numel"] / warm["total_numel"], 8), "loaded ratio formula")
     assert_equal(warm["loaded_key_count"], len(warm["loaded_keys"]), "loaded key count")
     assert_true(warm["total_key_count"] >= warm["loaded_key_count"], "total key count")
+    hybrid = json.loads(Path(paths["hybrid_warm_start_report"]).read_text(encoding="utf-8"))
+    assert_true(hybrid["components"]["class_backbone"]["loaded_keys"], "hybrid class/backbone loaded")
+    assert_true(hybrid["components"]["tamper_head"]["loaded_keys"], "hybrid tamper head loaded")
+    assert_true(hybrid["components"]["new_heads"]["missing_keys"], "new nuisance heads initialized fresh")
     import torch
 
     artifact = json.loads(Path(paths["artifact_manifest"]).read_text(encoding="utf-8"))
@@ -278,6 +344,7 @@ def test_tiny_real_run_writes_checkpoints() -> None:
     assert_equal(artifact["warm_start_summary"]["warm_start_checkpoint_path"], warm["warm_start_checkpoint_path"], "summary path")
     assert_equal(artifact["warm_start_summary"]["loaded_ratio"], warm["loaded_ratio"], "summary ratio")
     assert_equal(artifact["warm_start_summary"]["missing_key_count"], len(warm["missing_keys"]), "summary missing count")
+    assert_true("hybrid_warm_start_summary" in artifact, "artifact hybrid_warm_start_summary")
     assert_true(artifact["tensor_total_numel"] >= artifact["warm_start_loaded_numel"], "checkpoint tensor count comparable")
     for key in ("best_checkpoint", "last_checkpoint"):
         payload = torch.load(paths[key], map_location="cpu")
@@ -320,6 +387,7 @@ def main() -> int:
         test_example_config_validates,
         test_nuisance_mask_target_and_jpeg_only_profile,
         test_mask_losses_and_gating,
+        test_class_balanced_sampling_and_best_guard,
         test_collapse_guard_detects_single_class_predictions,
         test_guardrails_reject_leakage_and_flags,
         test_dry_run_and_approval,

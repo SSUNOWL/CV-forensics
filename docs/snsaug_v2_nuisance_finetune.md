@@ -26,6 +26,14 @@ The gate is soft. It reduces the tendency to treat platform UI bars, text overla
 
 `artifact_manifest.json` also includes `warm_start_summary` with the source path, loaded/total numel, loaded ratio, and missing/unexpected key counts so audits can verify warm-start coverage without opening the full report.
 
+0064g changes the warm-start policy to a hybrid source:
+
+- class backbone and `class_head` load from `class_backbone_warm_start_path`, `pre_sns_best_bundle_path`, or the configured base bundle
+- tamper decoder and `tamper_mask_head` load from `tamper_head_warm_start_path`, `warm_start_checkpoint_path`, or the configured base bundle
+- `sns_nuisance_mask_head`, `global_degradation_head`, and `reliability_head` are always initialized from scratch
+
+The real run writes `hybrid_warm_start_report.json` next to the compatibility `warm_start_report.json`. The hybrid report records loaded/missing keys per component so an audit can distinguish class preservation from tamper-mask transfer.
+
 Gating is staged:
 
 - Phase 1 uses `gating_alpha_effective = 0.0` and trains only new nuisance/degradation/reliability heads.
@@ -33,6 +41,21 @@ Gating is staged:
 - Phase 3 caps gating at `min(gating_alpha, phase_3_gating_alpha_max)` unless joint tuning is explicitly enabled.
 
 The loss includes non-tampered tamper-mask suppression and mask-area regularization so real/synthetic SNS overlays do not become all-one tamper masks. Training logs include prediction counts, mean class probabilities, per-class tamper mask area, SNS-mask IoU, and effective gating alpha. Checkpoints record tensor counts and collapse-guard status; a collapsed checkpoint is not selected as best unless no guardrail-passing checkpoint exists.
+
+0064g adds synthetic-preservation pressure because prior 0064 runs recovered tamper activation largely through over-tampered bias while `synthetic_recall` remained zero on key SNS profiles. The preservation term penalizes synthetic rows when `p_synthetic` falls below `synthetic_probability_floor`, and class-balanced SNS sampling cycles real, synthetic, and tampered rows so synthetic examples are not starved during short corrective runs. Logs now include `synthetic_preservation_loss`, synthetic-recall proxy, real-FPR proxy, tampered-recall proxy, and non-tampered high-mask-rate proxy fields.
+
+Best-checkpoint selection uses the balanced score:
+
+```text
+balanced_score =
+  + 1.0 * tampered_recall
+  + 1.0 * tampered_valid_mean_iou
+  + 0.8 * synthetic_recall
+  - 2.0 * real_fpr
+  - 1.0 * non_tampered_high_mask_rate
+```
+
+The guard rejects checkpoints with `synthetic_recall = 0`, high real false positives, high non-tampered mask activation, weak tampered recall, or single-class collapse. If no checkpoint passes, the branch still writes the last real-weight checkpoint and marks selection as `fallback_last_no_guardrail_pass`.
 
 Training remains guarded. A dry-run validates the config and prints planned outputs without creating checkpoint files. A real run requires:
 

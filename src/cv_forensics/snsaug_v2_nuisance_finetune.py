@@ -33,8 +33,6 @@ from .snsaug_v2_full_curriculum_finetune import (
 from .snsaug_v2_losses import CLASS_TO_INDEX
 from .snsaug_v2_nuisance_losses import (
     degradation_label_from_profile,
-    mask_area_regularization_loss,
-    non_tampered_mask_suppression_loss,
     sns_nuisance_mask_target,
     total_nuisance_loss,
 )
@@ -60,6 +58,7 @@ PHASES = (
 REQUIRED_OUTPUTS = [
     "training_log.jsonl",
     "warm_start_report.json",
+    "hybrid_warm_start_report.json",
     "loss_breakdown.json",
     "per_phase_metrics.json",
     "clean_validation_metrics.json",
@@ -161,12 +160,16 @@ def validate_snsaug_v2_nuisance_finetune_config(raw: dict[str, Any], require_exi
         ("lambda_hardneg", 1.0),
         ("lambda_tamper_mask", 1.0),
         ("lambda_gating_consistency", 0.5),
+        ("lambda_synthetic_preservation", 2.0),
+        ("lambda_non_tampered_tampered_suppression", 2.0),
+        ("lambda_class_preservation", 1.0),
         ("lambda_non_tampered_mask_suppression", 1.0),
         ("lambda_mask_area_regularization", 0.1),
         ("gating_alpha", 0.5),
-        ("phase_2_gating_alpha_max", 0.2),
-        ("phase_3_gating_alpha_max", 0.3),
+        ("phase_2_gating_alpha_max", 0.15),
+        ("phase_3_gating_alpha_max", 0.25),
         ("p_tampered_ceiling", 0.05),
+        ("synthetic_probability_floor", 0.35),
         ("min_warm_start_loaded_numel_ratio", 0.25),
         ("require_warm_start_loaded_numel_ratio_gte", 0.0),
     ):
@@ -183,6 +186,7 @@ def validate_snsaug_v2_nuisance_finetune_config(raw: dict[str, Any], require_exi
                     "phase_2_gating_alpha_max",
                     "phase_3_gating_alpha_max",
                     "p_tampered_ceiling",
+                    "synthetic_probability_floor",
                     "min_warm_start_loaded_numel_ratio",
                     "require_warm_start_loaded_numel_ratio_gte",
                 }
@@ -221,6 +225,10 @@ def validate_snsaug_v2_nuisance_finetune_config(raw: dict[str, Any], require_exi
         errors.extend(_validate_under_roots(raw.get("pre_sns_best_bundle_path"), "pre_sns_best_bundle_path", model_roots, require_exists=require_exists))
     if raw.get("warm_start_checkpoint_path"):
         errors.extend(_validate_under_roots(raw.get("warm_start_checkpoint_path"), "warm_start_checkpoint_path", model_roots, require_exists=require_exists))
+    if raw.get("class_backbone_warm_start_path"):
+        errors.extend(_validate_under_roots(raw.get("class_backbone_warm_start_path"), "class_backbone_warm_start_path", model_roots, require_exists=require_exists))
+    if raw.get("tamper_head_warm_start_path"):
+        errors.extend(_validate_under_roots(raw.get("tamper_head_warm_start_path"), "tamper_head_warm_start_path", model_roots, require_exists=require_exists))
     errors.extend(_validate_under_roots(raw.get("clean_validation_manifest_path"), "clean_validation_manifest_path", eval_roots, require_exists=require_exists))
     errors.extend(_validate_under_roots(raw.get("evaluation_pair_root_0058c"), "evaluation_pair_root_0058c", eval_roots, require_exists=require_exists))
 
@@ -256,6 +264,7 @@ def planned_output_paths(output_root: str | Path, checkpoint_root: str | Path) -
     return {
         "training_log": str(out / "training_log.jsonl"),
         "warm_start_report": str(out / "warm_start_report.json"),
+        "hybrid_warm_start_report": str(out / "hybrid_warm_start_report.json"),
         "loss_breakdown": str(out / "loss_breakdown.json"),
         "per_phase_metrics": str(out / "per_phase_metrics.json"),
         "clean_validation_metrics": str(out / "clean_validation_metrics.json"),
@@ -285,9 +294,10 @@ def build_nuisance_finetune_plan(config: dict[str, Any]) -> dict[str, Any]:
         "loss": {
             "lambda_sns_mask": float(config.get("lambda_sns_mask", 1.0)),
             "lambda_degradation": float(config.get("lambda_degradation", 0.3)),
-            "lambda_hardneg": float(config.get("lambda_hardneg", 1.0)),
+            "lambda_hardneg": float(config.get("lambda_non_tampered_tampered_suppression", config.get("lambda_hardneg", 2.0))),
+            "lambda_synthetic_preservation": float(config.get("lambda_synthetic_preservation", 2.0)),
             "lambda_tamper_mask": float(config.get("lambda_tamper_mask", 1.0)),
-            "lambda_gating_consistency": float(config.get("lambda_gating_consistency", 0.5)),
+            "lambda_gating_consistency": float(config.get("lambda_class_preservation", config.get("lambda_gating_consistency", 1.0))),
             "lambda_non_tampered_mask_suppression": float(config.get("lambda_non_tampered_mask_suppression", 1.0)),
             "lambda_mask_area_regularization": float(config.get("lambda_mask_area_regularization", 0.1)),
         },
@@ -296,6 +306,8 @@ def build_nuisance_finetune_plan(config: dict[str, Any]) -> dict[str, Any]:
             "allow_partial_warm_start": bool(config.get("allow_partial_warm_start", False)),
             "warm_start_checkpoint_path": config.get("warm_start_checkpoint_path"),
             "pre_sns_best_bundle_path": config.get("pre_sns_best_bundle_path"),
+            "class_backbone_warm_start_path": config.get("class_backbone_warm_start_path"),
+            "tamper_head_warm_start_path": config.get("tamper_head_warm_start_path"),
         },
         "required_outputs": REQUIRED_OUTPUTS,
         "phases": [
@@ -430,12 +442,147 @@ def _warm_start_source(config: dict[str, Any], base_checkpoint: dict[str, Any], 
     return str(config["base_model_bundle_path"]), base_state
 
 
+def _state_from_path_or_bundle(path_value: Any, config: dict[str, Any], fallback_state: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    if not path_value:
+        return str(config["base_model_bundle_path"]), fallback_state
+    path = _real(str(path_value))
+    torch = _runtime_torch()
+    if path.suffix == ".pt":
+        payload = torch.load(path, map_location="cpu")
+        if not isinstance(payload, dict):
+            raise SNSAugV2NuisanceFinetuneError(f"warm-start checkpoint must contain a dict payload: {path}")
+        state = payload.get("model_state_dict") or payload.get("state_dict")
+        if not isinstance(state, dict):
+            raise SNSAugV2NuisanceFinetuneError(f"warm-start checkpoint missing model_state_dict/state_dict: {path}")
+        return str(path), state
+    _base_model, _base_checkpoint, _image_size, _base_bundle, state = _load_base_bundle_and_model(
+        {**config, "base_model_bundle_path": str(path)},
+        device="cpu",
+    )
+    return str(path), state
+
+
 def _candidate_warm_key(key: str) -> str | None:
     if key.startswith("sns_nuisance_mask_head.") or key.startswith("global_degradation_head.") or key.startswith("reliability_head."):
         return None
     if key.startswith("tamper_mask_head."):
         return "mask_head." + key[len("tamper_mask_head.") :]
     return key
+
+
+def _candidate_warm_keys(key: str) -> list[str]:
+    first = _candidate_warm_key(key)
+    candidates = [candidate for candidate in (first, key) if candidate]
+    seen: set[str] = set()
+    unique: list[str] = []
+    for candidate in candidates:
+        if candidate not in seen:
+            unique.append(candidate)
+            seen.add(candidate)
+    return unique
+
+
+def _component_for_key(key: str) -> str:
+    if key.startswith(("high_pass.", "stem.", "stage2.", "stage3.", "stage4.", "pool.", "class_head.")):
+        return "class_backbone"
+    if key.startswith(("up1.", "up2.", "up3.", "tamper_mask_head.")):
+        return "tamper_head"
+    if key.startswith(("sns_nuisance_mask_head.", "global_degradation_head.", "reliability_head.")):
+        return "new_heads"
+    return "other"
+
+
+def hybrid_warm_start_nuisance_model(
+    model: Any,
+    *,
+    class_state: dict[str, Any],
+    class_path: str,
+    tamper_state: dict[str, Any],
+    tamper_path: str,
+    config: dict[str, Any],
+) -> dict[str, Any]:
+    model_state = model.state_dict()
+    current = dict(model_state)
+    report: dict[str, Any] = {
+        "marker": MARKER,
+        "class_backbone_warm_start_path": class_path,
+        "tamper_head_warm_start_path": tamper_path,
+        "components": {
+            "class_backbone": {"loaded_keys": [], "missing_keys": [], "unexpected_keys": [], "loaded_numel": 0},
+            "tamper_head": {"loaded_keys": [], "missing_keys": [], "unexpected_keys": [], "loaded_numel": 0},
+            "new_heads": {"loaded_keys": [], "missing_keys": [], "unexpected_keys": [], "loaded_numel": 0},
+        },
+        "total_model_numel": _state_tensor_numel(model_state),
+    }
+    source_by_component = {"class_backbone": class_state, "tamper_head": tamper_state}
+    for key, target_value in model_state.items():
+        component = _component_for_key(str(key))
+        if component == "new_heads":
+            report["components"]["new_heads"]["missing_keys"].append(str(key))
+            continue
+        if component not in source_by_component:
+            continue
+        source_value = None
+        for source_key in _candidate_warm_keys(str(key)):
+            source_value = source_by_component[component].get(source_key)
+            if source_value is not None:
+                break
+        if source_value is not None and hasattr(source_value, "shape") and hasattr(target_value, "shape") and tuple(source_value.shape) == tuple(target_value.shape):
+            current[key] = source_value
+            report["components"][component]["loaded_keys"].append(str(key))
+            report["components"][component]["loaded_numel"] += int(source_value.numel()) if hasattr(source_value, "numel") else 0
+        else:
+            report["components"][component]["missing_keys"].append(str(key))
+    model.load_state_dict(current)
+    class_expected = {candidate for key in model_state if _component_for_key(str(key)) == "class_backbone" for candidate in _candidate_warm_keys(str(key))}
+    tamper_expected = {candidate for key in model_state if _component_for_key(str(key)) == "tamper_head" for candidate in _candidate_warm_keys(str(key))}
+    report["components"]["class_backbone"]["unexpected_keys"] = sorted(str(key) for key in class_state if key not in class_expected)
+    report["components"]["tamper_head"]["unexpected_keys"] = sorted(str(key) for key in tamper_state if key not in tamper_expected)
+    report["loaded_numel"] = sum(int(report["components"][name]["loaded_numel"]) for name in ("class_backbone", "tamper_head"))
+    report["loaded_ratio"] = report["loaded_numel"] / report["total_model_numel"] if report["total_model_numel"] else None
+    return report
+
+
+def _legacy_warm_start_report_from_hybrid(
+    model: Any,
+    *,
+    hybrid_report: dict[str, Any],
+    class_state: dict[str, Any],
+    tamper_state: dict[str, Any],
+    class_path: str,
+    config: dict[str, Any],
+) -> dict[str, Any]:
+    model_state = model.state_dict()
+    components = hybrid_report.get("components") or {}
+    loaded_keys = list((components.get("class_backbone") or {}).get("loaded_keys") or [])
+    loaded_keys.extend((components.get("tamper_head") or {}).get("loaded_keys") or [])
+    missing_keys = list((components.get("class_backbone") or {}).get("missing_keys") or [])
+    missing_keys.extend((components.get("tamper_head") or {}).get("missing_keys") or [])
+    missing_keys.extend((components.get("new_heads") or {}).get("missing_keys") or [])
+    unexpected_keys = list((components.get("class_backbone") or {}).get("unexpected_keys") or [])
+    unexpected_keys.extend((components.get("tamper_head") or {}).get("unexpected_keys") or [])
+    total_numel = _state_tensor_numel(model_state)
+    loaded_numel = int(hybrid_report.get("loaded_numel") or 0)
+    return {
+        "marker": MARKER,
+        "source_path": class_path,
+        "warm_start_source": "hybrid_class_backbone_plus_tamper_head",
+        "warm_start_checkpoint_path": class_path,
+        "warm_start_checkpoint_exists": Path(class_path).expanduser().exists(),
+        "class_backbone_warm_start_path": hybrid_report.get("class_backbone_warm_start_path"),
+        "tamper_head_warm_start_path": hybrid_report.get("tamper_head_warm_start_path"),
+        "loaded_keys": loaded_keys,
+        "missing_keys": missing_keys,
+        "unexpected_keys": sorted(set(str(key) for key in unexpected_keys)),
+        "shape_mismatch_keys": [],
+        "loaded_key_count": len(loaded_keys),
+        "total_key_count": len(model_state),
+        "loaded_numel": loaded_numel,
+        "total_numel": total_numel,
+        "loaded_ratio": loaded_numel / total_numel if total_numel else None,
+        "source_tensor_total_numel": max(_state_tensor_numel(class_state), _state_tensor_numel(tamper_state)),
+        "allow_partial_warm_start": bool(config.get("allow_partial_warm_start", False)),
+    }
 
 
 def warm_start_nuisance_model(model: Any, source_state: dict[str, Any], *, source_path: str, config: dict[str, Any]) -> dict[str, Any]:
@@ -445,11 +592,11 @@ def warm_start_nuisance_model(model: Any, source_state: dict[str, Any], *, sourc
     missing_keys: list[str] = []
     shape_mismatch_keys: list[str] = []
     for key, target_value in model_state.items():
-        source_key = _candidate_warm_key(str(key))
-        if source_key is None:
-            missing_keys.append(str(key))
-            continue
-        source_value = source_state.get(source_key)
+        source_value = None
+        for source_key in _candidate_warm_keys(str(key)):
+            source_value = source_state.get(source_key)
+            if source_value is not None:
+                break
         if source_value is None:
             missing_keys.append(str(key))
             continue
@@ -479,7 +626,7 @@ def warm_start_nuisance_model(model: Any, source_state: dict[str, Any], *, sourc
         "warm_start_checkpoint_exists": Path(source_path).expanduser().exists(),
         "loaded_keys": loaded_keys,
         "missing_keys": missing_keys,
-        "unexpected_keys": sorted(str(key) for key in source_state.keys() if key not in set(_candidate_warm_key(k) for k in model_state)),
+        "unexpected_keys": sorted(str(key) for key in source_state.keys() if key not in {candidate for k in model_state for candidate in _candidate_warm_keys(str(k))}),
         "shape_mismatch_keys": shape_mismatch_keys,
         "loaded_key_count": len(loaded_keys),
         "total_key_count": len(model_state),
@@ -521,9 +668,9 @@ def _gating_alpha_for_step(config: dict[str, Any], phase: int, phase_step: int, 
     if phase == 1:
         return 0.0
     if phase == 2:
-        cap = min(requested, float(config.get("phase_2_gating_alpha_max", 0.2)))
+        cap = min(requested, float(config.get("phase_2_gating_alpha_max", 0.15)))
         return cap * (float(phase_step) / max(float(phase_total), 1.0))
-    return min(requested, float(config.get("phase_3_gating_alpha_max", 0.3)))
+    return min(requested, float(config.get("phase_3_gating_alpha_max", 0.25)))
 
 
 def collapse_guard_from_records(records: list[dict[str, Any]], *, min_distinct_classes: int = 2) -> dict[str, Any]:
@@ -581,6 +728,59 @@ def _phase_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
     return counts
 
 
+def _group_train_rows_by_label(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    grouped = {"real": [], "synthetic": [], "tampered": []}
+    for row in rows:
+        label = str(row.get("content_label") or "")
+        if label in grouped:
+            grouped[label].append(row)
+    return grouped
+
+
+def _select_class_balanced_row(grouped: dict[str, list[dict[str, Any]]], step_index: int) -> dict[str, Any]:
+    label_order = ("real", "synthetic", "tampered")
+    preferred = label_order[step_index % len(label_order)]
+    candidates = grouped.get(preferred) or []
+    if not candidates:
+        candidates = [row for rows in grouped.values() for row in rows]
+    if not candidates:
+        raise SNSAugV2NuisanceFinetuneError("training manifest produced no class-balanced rows")
+    return candidates[(step_index // len(label_order)) % len(candidates)]
+
+
+def build_class_balanced_sampling_preview(rows: list[dict[str, Any]], count: int) -> list[str]:
+    grouped = _group_train_rows_by_label(rows)
+    return [str(_select_class_balanced_row(grouped, index).get("content_label")) for index in range(max(0, int(count)))]
+
+
+def best_checkpoint_guard(metrics: dict[str, Any]) -> dict[str, Any]:
+    synthetic_recall = float(metrics.get("synthetic_recall") or 0.0)
+    tampered_recall = float(metrics.get("tampered_recall") or 0.0)
+    valid_iou = float(metrics.get("tampered_valid_mean_iou") or metrics.get("snsaug_valid_iou") or 0.0)
+    real_fpr = float(metrics.get("real_fpr") or 0.0)
+    high_mask = float(metrics.get("non_tampered_high_mask_rate") or 0.0)
+    balanced_score = (
+        1.0 * tampered_recall
+        + 1.0 * valid_iou
+        + 0.8 * synthetic_recall
+        - 2.0 * real_fpr
+        - 1.0 * high_mask
+    )
+    passes = (
+        synthetic_recall > 0.0
+        and synthetic_recall >= 0.40
+        and tampered_recall >= 0.50
+        and real_fpr <= 0.60
+        and high_mask < 0.50
+        and not bool(metrics.get("single_class_prediction_collapse"))
+    )
+    return {
+        "balanced_score": balanced_score,
+        "passes_best_guardrails": passes,
+        "best_checkpoint_selected_by": "guardrail_pass" if passes else "fallback_last_no_guardrail_pass",
+    }
+
+
 def _mask_iou(torch: Any, pred: Any, target: Any) -> float:
     binary = (pred >= 0.5).float()
     inter = float((binary * target).sum().item())
@@ -597,19 +797,46 @@ def run_snsaug_v2_nuisance_finetune(config: dict[str, Any], *, dry_run: bool = F
         return plan
 
     rows = _load_train_rows(config)
+    grouped_rows = _group_train_rows_by_label(rows)
     torch = _runtime_torch()
     device = "cpu"
     _base_model, base_checkpoint, image_size, base_bundle, base_state = _load_base_bundle_and_model(config, device=device)
-    warm_source_path, warm_source_state = _warm_start_source(config, base_checkpoint, base_state)
+    class_source_value = (
+        config.get("class_backbone_warm_start_path")
+        or config.get("pre_sns_best_bundle_path")
+        or config.get("base_model_bundle_path")
+    )
+    tamper_source_value = (
+        config.get("tamper_head_warm_start_path")
+        or config.get("warm_start_checkpoint_path")
+        or config.get("base_model_bundle_path")
+    )
+    class_source_path, class_source_state = _state_from_path_or_bundle(class_source_value, config, base_state)
+    tamper_source_path, tamper_source_state = _state_from_path_or_bundle(tamper_source_value, config, base_state)
     image_size = int(config.get("image_size", image_size))
-    base_channels = int(config.get("base_channels") or _infer_base_channels_from_state(warm_source_state, int(base_checkpoint.get("base_channels", 4))))
+    base_channels = int(config.get("base_channels") or _infer_base_channels_from_state(class_source_state, int(base_checkpoint.get("base_channels", 4))))
     model = build_snsaug_v2_nuisance_model(
         torch,
         base_channels=base_channels,
         degradation_dim=len(DEGRADATION_LABELS),
         gating_alpha=float(config.get("gating_alpha", 0.5)),
     ).to(device)
-    warm_start_report = warm_start_nuisance_model(model, warm_source_state, source_path=warm_source_path, config=config)
+    hybrid_warm_start_report = hybrid_warm_start_nuisance_model(
+        model,
+        class_state=class_source_state,
+        class_path=class_source_path,
+        tamper_state=tamper_source_state,
+        tamper_path=tamper_source_path,
+        config=config,
+    )
+    warm_start_report = _legacy_warm_start_report_from_hybrid(
+        model,
+        hybrid_report=hybrid_warm_start_report,
+        class_state=class_source_state,
+        tamper_state=tamper_source_state,
+        class_path=class_source_path,
+        config=config,
+    )
     output_root = _real(config["output_root"])
     checkpoint_root = _real(config["checkpoint_root"])
     output_root.mkdir(parents=True, exist_ok=True)
@@ -618,9 +845,10 @@ def run_snsaug_v2_nuisance_finetune(config: dict[str, Any], *, dry_run: bool = F
     weights = {
         "lambda_sns_mask": float(config.get("lambda_sns_mask", 1.0)),
         "lambda_degradation": float(config.get("lambda_degradation", 0.3)),
-        "lambda_hardneg": float(config.get("lambda_hardneg", 1.0)),
+        "lambda_hardneg": float(config.get("lambda_non_tampered_tampered_suppression", config.get("lambda_hardneg", 2.0))),
         "lambda_tamper_mask": float(config.get("lambda_tamper_mask", 1.0)),
-        "lambda_gating_consistency": float(config.get("lambda_gating_consistency", 0.5)),
+        "lambda_gating_consistency": float(config.get("lambda_class_preservation", config.get("lambda_gating_consistency", 1.0))),
+        "lambda_synthetic_preservation": float(config.get("lambda_synthetic_preservation", 2.0)),
         "lambda_non_tampered_mask_suppression": float(config.get("lambda_non_tampered_mask_suppression", 1.0)),
         "lambda_mask_area_regularization": float(config.get("lambda_mask_area_regularization", 0.1)),
     }
@@ -639,7 +867,7 @@ def run_snsaug_v2_nuisance_finetune(config: dict[str, Any], *, dry_run: bool = F
         )
         phase_log_rows: list[dict[str, Any]] = []
         for phase_step in range(1, phase_steps[phase] + 1):
-            row = rows[global_step % len(rows)]
+            row = _select_class_balanced_row(grouped_rows, global_step)
             batch = _synthetic_nuisance_batch(torch, image_size, row, device)
             gating_alpha_effective = _gating_alpha_for_step(config, phase, phase_step, phase_steps[phase])
             model.gating_alpha = float(gating_alpha_effective)
@@ -651,6 +879,7 @@ def run_snsaug_v2_nuisance_finetune(config: dict[str, Any], *, dry_run: bool = F
             )
             batch["clean_class_logits"] = clean_outputs["class_logits"].detach()
             batch["p_tampered_ceiling"] = float(config.get("p_tampered_ceiling", 0.05))
+            batch["synthetic_probability_floor"] = float(config.get("synthetic_probability_floor", 0.35))
             losses = total_nuisance_loss(outputs, batch, weights=weights)
             total_loss = losses["total_loss"]
             optimizer.zero_grad(set_to_none=True)
@@ -662,6 +891,7 @@ def run_snsaug_v2_nuisance_finetune(config: dict[str, Any], *, dry_run: bool = F
             tamper_mask_prob = outputs["tamper_mask_logits"].detach().sigmoid()
             pred_class = max(CLASS_TO_INDEX, key=lambda label: float(probs[CLASS_TO_INDEX[label]].item()))
             tamper_mask_area = _finite(tamper_mask_prob.mean().detach().cpu().item(), "tamper_mask_area")
+            content_label = str(batch["content_label"])
             log_row = {
                 "marker": MARKER,
                 "phase": phase,
@@ -671,7 +901,7 @@ def run_snsaug_v2_nuisance_finetune(config: dict[str, Any], *, dry_run: bool = F
                 "gating_alpha_effective": _finite(gating_alpha_effective, "gating_alpha_effective"),
                 "trainable_prefixes": trainable_prefixes,
                 "profile": batch["profile"],
-                "content_label": batch["content_label"],
+                "content_label": content_label,
                 "pred_class": pred_class,
                 "total_loss": _finite(total_loss.detach().cpu().item(), "total_loss"),
                 "class_loss": _finite(losses["class_loss"].detach().cpu().item(), "class_loss"),
@@ -680,15 +910,20 @@ def run_snsaug_v2_nuisance_finetune(config: dict[str, Any], *, dry_run: bool = F
                 "global_degradation_loss": _finite(losses["global_degradation_loss"].detach().cpu().item(), "global_degradation_loss"),
                 "clean_sns_class_consistency_loss": _finite(losses["clean_sns_class_consistency_loss"].detach().cpu().item(), "consistency_loss"),
                 "hardneg_loss": _finite(losses["hardneg_loss"].detach().cpu().item(), "hardneg_loss"),
+                "synthetic_preservation_loss": _finite(losses["synthetic_preservation_loss"].detach().cpu().item(), "synthetic_preservation_loss"),
                 "non_tampered_mask_suppression_loss": _finite(losses["non_tampered_mask_suppression_loss"].detach().cpu().item(), "non_tampered_mask_suppression_loss"),
                 "mask_area_regularization_loss": _finite(losses["mask_area_regularization_loss"].detach().cpu().item(), "mask_area_regularization_loss"),
                 "p_real": _finite(probs[CLASS_TO_INDEX["real"]].item(), "p_real"),
                 "p_synthetic": _finite(probs[CLASS_TO_INDEX["synthetic"]].item(), "p_synthetic"),
                 "p_tampered": _finite(probs[CLASS_TO_INDEX["tampered"]].item(), "p_tampered"),
                 "tamper_mask_area": tamper_mask_area,
-                "tamper_mask_area_real": tamper_mask_area if batch["content_label"] == "real" else 0.0,
-                "tamper_mask_area_synthetic": tamper_mask_area if batch["content_label"] == "synthetic" else 0.0,
-                "tamper_mask_area_tampered": tamper_mask_area if batch["content_label"] == "tampered" else 0.0,
+                "tamper_mask_area_real": tamper_mask_area if content_label == "real" else 0.0,
+                "tamper_mask_area_synthetic": tamper_mask_area if content_label == "synthetic" else 0.0,
+                "tamper_mask_area_tampered": tamper_mask_area if content_label == "tampered" else 0.0,
+                "synthetic_recall_proxy": 1.0 if content_label == "synthetic" and pred_class == "synthetic" else 0.0,
+                "real_fpr_proxy": 1.0 if content_label == "real" and pred_class == "tampered" else 0.0,
+                "tampered_recall_proxy": 1.0 if content_label == "tampered" and pred_class == "tampered" else 0.0,
+                "non_tampered_high_mask_rate_proxy": 1.0 if content_label != "tampered" and tamper_mask_area > 0.5 else 0.0,
                 "sns_nuisance_mask_iou": _finite(_mask_iou(torch, sns_mask_prob, batch["sns_nuisance_mask"]), "sns_iou"),
                 "tampered_valid_mean_iou": _finite(_mask_iou(torch, tamper_mask_prob * (1.0 - batch["ignore_mask"]), batch["tamper_mask"]), "tamper_iou"),
             }
@@ -703,12 +938,17 @@ def run_snsaug_v2_nuisance_finetune(config: dict[str, Any], *, dry_run: bool = F
                 "mean_total_loss": _mean(phase_log_rows, "total_loss"),
                 "mean_class_loss": _mean(phase_log_rows, "class_loss"),
                 "mean_sns_nuisance_mask_loss": _mean(phase_log_rows, "sns_nuisance_mask_loss"),
+                "mean_synthetic_preservation_loss": _mean(phase_log_rows, "synthetic_preservation_loss"),
                 "mean_p_real": _mean(phase_log_rows, "p_real"),
                 "mean_p_synthetic": _mean(phase_log_rows, "p_synthetic"),
                 "mean_p_tampered": _mean(phase_log_rows, "p_tampered"),
                 "mean_tamper_mask_area_real": _mean([row for row in phase_log_rows if row["content_label"] == "real"], "tamper_mask_area"),
                 "mean_tamper_mask_area_synthetic": _mean([row for row in phase_log_rows if row["content_label"] == "synthetic"], "tamper_mask_area"),
                 "mean_tamper_mask_area_tampered": _mean([row for row in phase_log_rows if row["content_label"] == "tampered"], "tamper_mask_area"),
+                "synthetic_recall_proxy": _mean(phase_log_rows, "synthetic_recall_proxy"),
+                "real_fpr_proxy": _mean(phase_log_rows, "real_fpr_proxy"),
+                "tampered_recall_proxy": _mean(phase_log_rows, "tampered_recall_proxy"),
+                "non_tampered_high_mask_rate_proxy": _mean(phase_log_rows, "non_tampered_high_mask_rate_proxy"),
                 "gating_alpha_effective": _mean(phase_log_rows, "gating_alpha_effective"),
                 **collapse_guard_from_records(phase_log_rows),
             }
@@ -741,14 +981,9 @@ def run_snsaug_v2_nuisance_finetune(config: dict[str, Any], *, dry_run: bool = F
         **collapse_guard,
     }
     phase_counts = _phase_counts(log_rows)
-    passes_best_guardrails = (
-        metrics["synthetic_recall"] > 0.2
-        and metrics["tampered_recall"] > 0.2
-        and metrics["non_tampered_high_mask_rate"] < 0.5
-        and not metrics["single_class_prediction_collapse"]
-    )
-    selected_by = "guardrail_pass" if passes_best_guardrails else "fallback_last_no_guardrail_pass"
-    checkpoint_metrics = {**metrics, "phase_counts": phase_counts, "best_checkpoint_selected_by": selected_by}
+    guard = best_checkpoint_guard(metrics)
+    selected_by = str(guard["best_checkpoint_selected_by"])
+    checkpoint_metrics = {**metrics, **guard, "phase_counts": phase_counts}
     best_payload = _checkpoint_payload(model=model, optimizer=optimizer, global_step=global_step, phase=3, config=config, metrics=checkpoint_metrics, base_bundle=base_bundle)
     last_payload = _checkpoint_payload(model=model, optimizer=optimizer, global_step=global_step, phase=3, config=config, metrics=checkpoint_metrics, base_bundle=base_bundle)
     best_path = Path(paths["best_checkpoint"])
@@ -771,6 +1006,7 @@ def run_snsaug_v2_nuisance_finetune(config: dict[str, Any], *, dry_run: bool = F
     output_paths = {
         "training_log": _write_jsonl(Path(paths["training_log"]), log_rows),
         "warm_start_report": _write_json(Path(paths["warm_start_report"]), warm_start_report),
+        "hybrid_warm_start_report": _write_json(Path(paths["hybrid_warm_start_report"]), hybrid_warm_start_report),
         "loss_breakdown": _write_json(
             Path(paths["loss_breakdown"]),
             {
@@ -778,6 +1014,7 @@ def run_snsaug_v2_nuisance_finetune(config: dict[str, Any], *, dry_run: bool = F
                 "step_count": len(log_rows),
                 "phase_counts": phase_counts,
                 "mean_total_loss": _mean(log_rows, "total_loss"),
+                "mean_synthetic_preservation_loss": _mean(log_rows, "synthetic_preservation_loss"),
                 "mean_non_tampered_mask_suppression_loss": _mean(log_rows, "non_tampered_mask_suppression_loss"),
                 "mean_mask_area_regularization_loss": _mean(log_rows, "mask_area_regularization_loss"),
             },
@@ -799,11 +1036,19 @@ def run_snsaug_v2_nuisance_finetune(config: dict[str, Any], *, dry_run: bool = F
         "global_step": global_step,
         "phase_counts": phase_counts,
         "warm_start_report_path": paths["warm_start_report"],
+        "hybrid_warm_start_report_path": paths["hybrid_warm_start_report"],
         "warm_start_loaded_numel": warm_start_report["loaded_numel"],
         "warm_start_source_tensor_total_numel": warm_start_report["source_tensor_total_numel"],
         "warm_start_summary": _warm_start_summary(warm_start_report),
+        "hybrid_warm_start_summary": {
+            "class_backbone_warm_start_path": hybrid_warm_start_report.get("class_backbone_warm_start_path"),
+            "tamper_head_warm_start_path": hybrid_warm_start_report.get("tamper_head_warm_start_path"),
+            "loaded_numel": hybrid_warm_start_report.get("loaded_numel"),
+            "loaded_ratio": hybrid_warm_start_report.get("loaded_ratio"),
+        },
         "tensor_total_numel": checkpoint_stats["tensor_total_numel"],
         "best_checkpoint_selected_by": selected_by,
+        "balanced_score": guard["balanced_score"],
         "collapse_guard": collapse_guard,
         "best_checkpoint_path": str(best_path),
         "last_checkpoint_path": str(last_path),
@@ -832,7 +1077,9 @@ __all__ = [
     "MARKER",
     "MODEL_VERSION",
     "SNSAugV2NuisanceFinetuneError",
+    "best_checkpoint_guard",
     "build_nuisance_finetune_plan",
+    "build_class_balanced_sampling_preview",
     "load_snsaug_v2_nuisance_finetune_config",
     "planned_output_paths",
     "run_snsaug_v2_nuisance_finetune",

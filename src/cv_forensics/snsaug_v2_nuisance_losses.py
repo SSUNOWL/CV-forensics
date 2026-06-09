@@ -136,6 +136,36 @@ def mask_area_regularization_loss(pred_mask: Any, reduction: str = "mean"):
     return mean_area * mean_area
 
 
+def synthetic_preservation_loss(logits: Any, labels: Any, *, floor: float = 0.35, reduction: str = "mean"):
+    """Penalize synthetic rows whose synthetic probability falls below a floor."""
+
+    torch, _F = _torch_modules()
+    if torch is not None and hasattr(logits, "shape"):
+        target = labels if hasattr(labels, "shape") else torch.tensor([CLASS_TO_INDEX[str(label)] for label in labels], device=logits.device)
+        mask = (target.long() == CLASS_TO_INDEX["synthetic"]).float()
+        probs = logits.float().softmax(dim=-1)[:, CLASS_TO_INDEX["synthetic"]]
+        loss = (float(floor) - probs).clamp(min=0.0).pow(2) * mask
+        if reduction == "sum":
+            return loss.sum()
+        if reduction == "none":
+            return loss
+        return loss.sum() / mask.sum().clamp(min=1.0)
+    losses = []
+    label_values = labels if isinstance(labels, (list, tuple)) else [labels]
+    for row, label in zip(logits, label_values):
+        label_index = CLASS_TO_INDEX[str(label)] if isinstance(label, str) else int(label)
+        if label_index != CLASS_TO_INDEX["synthetic"]:
+            losses.append(0.0)
+            continue
+        max_value = max(float(value) for value in row)
+        exps = [math.exp(float(value) - max_value) for value in row]
+        total = sum(exps) or 1.0
+        p_synthetic = exps[CLASS_TO_INDEX["synthetic"]] / total
+        losses.append(max(0.0, float(floor) - p_synthetic) ** 2)
+    denom = sum(1 for label in label_values if (CLASS_TO_INDEX[str(label)] if isinstance(label, str) else int(label)) == CLASS_TO_INDEX["synthetic"]) or 1
+    return sum(losses) / denom
+
+
 def total_nuisance_loss(outputs: dict[str, Any], batch: dict[str, Any], *, weights: dict[str, float]) -> dict[str, Any]:
     """Compute finite 0064 loss components."""
 
@@ -153,6 +183,11 @@ def total_nuisance_loss(outputs: dict[str, Any], batch: dict[str, Any], *, weigh
         batch["class_targets"],
         ceiling=float(batch.get("p_tampered_ceiling", 0.05)),
     )
+    synthetic_loss = synthetic_preservation_loss(
+        outputs["class_logits"],
+        batch["class_targets"],
+        floor=float(batch.get("synthetic_probability_floor", 0.35)),
+    )
     mask_suppression_loss = non_tampered_mask_suppression_loss(tamper_prob, batch["class_targets"])
     mask_area_loss = mask_area_regularization_loss(tamper_prob)
     total = (
@@ -162,6 +197,7 @@ def total_nuisance_loss(outputs: dict[str, Any], batch: dict[str, Any], *, weigh
         + float(weights.get("lambda_degradation", 0.3)) * degradation_loss
         + float(weights.get("lambda_gating_consistency", 0.5)) * consistency_loss
         + float(weights.get("lambda_hardneg", 1.0)) * hardneg_loss
+        + float(weights.get("lambda_synthetic_preservation", 2.0)) * synthetic_loss
         + float(weights.get("lambda_non_tampered_mask_suppression", 1.0)) * mask_suppression_loss
         + float(weights.get("lambda_mask_area_regularization", 0.1)) * mask_area_loss
     )
@@ -173,6 +209,7 @@ def total_nuisance_loss(outputs: dict[str, Any], batch: dict[str, Any], *, weigh
         "global_degradation_loss": degradation_loss,
         "clean_sns_class_consistency_loss": consistency_loss,
         "hardneg_loss": hardneg_loss,
+        "synthetic_preservation_loss": synthetic_loss,
         "non_tampered_mask_suppression_loss": mask_suppression_loss,
         "mask_area_regularization_loss": mask_area_loss,
     }
@@ -185,6 +222,7 @@ __all__ = [
     "non_tampered_mask_suppression_loss",
     "sns_nuisance_mask_loss",
     "sns_nuisance_mask_target",
+    "synthetic_preservation_loss",
     "total_nuisance_loss",
     "valid_tamper_mask_loss",
 ]
