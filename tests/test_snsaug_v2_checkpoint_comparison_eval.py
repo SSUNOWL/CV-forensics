@@ -341,6 +341,112 @@ def test_custom_model_id_and_explicit_comparison_pairs() -> None:
     assert_equal(comparisons[0]["right_model_id"], "gamma", "custom right ID")
 
 
+def test_probability_adapter_keeps_existing_record_probabilities() -> None:
+    row = eval_mod._normalize_record(
+        {
+            "base_id": "existing",
+            "profile": "clean",
+            "view": "clean",
+            "content_label": "synthetic",
+            "pred_class": "synthetic",
+            "p_real": 0.1,
+            "p_synthetic": 0.8,
+            "p_tampered": 0.1,
+        },
+        {"model_id": "old_model", "model_kind": "snsaug_finetuned_checkpoint"},
+    )
+    assert_equal(row["pred_class"], "synthetic", "existing pred_class preserved")
+    assert_equal(round(row["p_tampered"], 4), 0.1, "existing p_tampered preserved")
+    assert_equal(row["probability_source"], "record_fields", "record fields source")
+
+
+def test_probability_adapter_extracts_nuisance_class_logits() -> None:
+    row = eval_mod._normalize_record(
+        {
+            "base_id": "nuisance_logits",
+            "profile": "combined_sns_realistic",
+            "view": "sns_aug",
+            "content_label": "tampered",
+            "output": {"class_logits": [0.0, 1.0, 3.0]},
+        },
+        {"model_id": "snsaug_0064_nuisance_30x3", "model_kind": "snsaug_finetuned_checkpoint"},
+    )
+    assert_equal(row["pred_class"], "tampered", "logits pred_class")
+    assert_true(row["p_tampered"] > row["p_synthetic"] > row["p_real"], "softmax probabilities extracted")
+
+
+def test_probability_adapter_extracts_nuisance_class_probs() -> None:
+    row = eval_mod._normalize_record(
+        {
+            "base_id": "nuisance_probs",
+            "profile": "tiktok_like",
+            "view": "sns_aug",
+            "content_label": "real",
+            "model_output": {"classification": {"probs": [2.0, 1.0, 1.0]}},
+        },
+        {"model_id": "snsaug_0064_nuisance_30x3", "model_kind": "snsaug_finetuned_checkpoint"},
+    )
+    assert_equal(row["pred_class"], "real", "normalized probs pred_class")
+    assert_equal(round(row["p_real"], 4), 0.5, "probabilities normalized")
+    assert_equal(round(row["p_synthetic"], 4), 0.25, "synthetic probability normalized")
+    assert_equal(round(row["p_tampered"], 4), 0.25, "tampered probability normalized")
+
+
+def test_missing_probability_output_writes_diagnostics_then_fails() -> None:
+    root = temp_root("cvf_0064b_probdiag_")
+    pair_root = root / "eval" / "snsaug_v2_0058c_fixed_pairs"
+    output_root = root / "out"
+    pair_root.mkdir(parents=True, exist_ok=True)
+    original_fixed_pair = eval_mod.fixed_pair_evaluate_rows
+
+    def fake_fixed_pair_evaluate_rows(bundle, fixed_config, rows):
+        return [
+            {
+                "base_id": "missing_prob",
+                "profile": "clean",
+                "view": "clean",
+                "content_label": "real",
+                "image_path": str(pair_root / "missing_prob.png"),
+                "classification": {"score": 0.5},
+            }
+        ]
+
+    eval_mod.fixed_pair_evaluate_rows = fake_fixed_pair_evaluate_rows
+    try:
+        try:
+            eval_mod._evaluate_model_records(
+                model={
+                    "model_id": "snsaug_0064_nuisance_30x3",
+                    "model_kind": "snsaug_finetuned_checkpoint",
+                    "model_path": str(root / "ckpts" / "nuisance.pt"),
+                },
+                bundle={},
+                config={
+                    "pair_root": str(pair_root),
+                    "approved_pair_roots": [str(root / "eval")],
+                    "approved_model_roots": [str(root / "ckpts")],
+                },
+                rows=[{"base_id": "missing_prob", "profile": "clean", "content_label": "real"}],
+                output_root=output_root,
+            )
+        except SNSAugV2CheckpointComparisonEvalError as exc:
+            assert_true("without p_tampered" in str(exc), "missing probabilities fail clearly")
+        else:
+            raise AssertionError("missing probability output must fail")
+    finally:
+        eval_mod.fixed_pair_evaluate_rows = original_fixed_pair
+
+    diagnostics_path = output_root / "probability_adapter_diagnostics.json"
+    records_path = output_root / "model_eval_records.jsonl"
+    assert_true(diagnostics_path.exists(), "probability diagnostics written")
+    assert_true(records_path.exists(), "partial records written")
+    diagnostics = json.loads(diagnostics_path.read_text(encoding="utf-8"))
+    assert_equal(diagnostics["model_id"], "snsaug_0064_nuisance_30x3", "diagnostics model id")
+    assert_true("classification.score" in diagnostics["available_nested_keys"], "nested keys recorded")
+    partial = [json.loads(line) for line in records_path.read_text(encoding="utf-8").splitlines()]
+    assert_true(partial and partial[0]["p_tampered"] is None, "partial record preserves missing probability")
+
+
 def test_missing_join_keys_writes_diagnostics_then_fails() -> None:
     root = temp_root("cvf_0061_diag_")
     cfg = safe_config(root)
@@ -429,6 +535,29 @@ def test_sanity_rejects_all_one_metrics() -> None:
         raise AssertionError("all-one metrics should fail sanity check")
 
 
+def test_sanity_rejects_none_p_tampered() -> None:
+    try:
+        sanity_check_outputs(
+            records=[{"model_id": "m", "p_tampered": None, "pred_class": "real"}],
+            per_profile={"m": {"clean": {"accuracy": 0.5, "sample_count": 1}}},
+            summary={"comparisons": [{"comparison": "x"}]},
+            model_infos=[],
+        )
+    except SNSAugV2CheckpointComparisonEvalError as exc:
+        assert_true("missing p_tampered" in str(exc), "None p_tampered rejected")
+    else:
+        raise AssertionError("None p_tampered should fail sanity check")
+
+
+def test_final_model_eval_records_contains_p_tampered_for_all_rows() -> None:
+    root = temp_root("cvf_0064b_records_")
+    cfg = safe_config(root)
+    summary = run_snsaug_v2_checkpoint_comparison_eval(cfg)
+    records = [json.loads(line) for line in Path(summary["output_paths"]["model_eval_records"]).read_text(encoding="utf-8").splitlines()]
+    assert_true(records, "records written")
+    assert_true(all(row.get("p_tampered") is not None for row in records), "all records contain p_tampered")
+
+
 def main() -> int:
     tests = [
         test_validator_rejects_training_eval_input_and_repo_output,
@@ -436,10 +565,16 @@ def main() -> int:
         test_matching_row_id_records_produce_comparisons,
         test_matching_composite_records_produce_comparisons,
         test_custom_model_id_and_explicit_comparison_pairs,
+        test_probability_adapter_keeps_existing_record_probabilities,
+        test_probability_adapter_extracts_nuisance_class_logits,
+        test_probability_adapter_extracts_nuisance_class_probs,
+        test_missing_probability_output_writes_diagnostics_then_fails,
         test_missing_join_keys_writes_diagnostics_then_fails,
         test_invalid_checkpoint_path_fails,
         test_trainable_state_only_checkpoint_fails_real_inference,
         test_sanity_rejects_all_one_metrics,
+        test_sanity_rejects_none_p_tampered,
+        test_final_model_eval_records_contains_p_tampered_for_all_rows,
     ]
     for test in tests:
         test()

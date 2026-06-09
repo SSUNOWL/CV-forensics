@@ -16,6 +16,12 @@ Preferred 0060b checkpoints use `checkpoint_kind=snsaug_v2_real_model_weights` a
 
 Every `model_eval_records.jsonl` row must contain `model_id`, sample identifiers when available (`row_id`, `record_id`, `sample_id`), `base_id`, `profile`, `view`, `content_label`, `image_path`, `pred_class`, `p_real`, `p_synthetic`, `p_tampered`, `localization_activated`, and tampered localization fields (`valid_iou`/`tampered_valid_iou`, `raw_iou`) where applicable. Metrics and comparisons are computed from these records only, not from labels, profile names, or synthetic score tables.
 
+## Probability Adapter
+
+SNSAug fine-tuned checkpoints may emit different inference schemas. The evaluator normalizes old records that already contain `p_real`, `p_synthetic`, and `p_tampered`, and nuisance-model outputs that expose class scores as `class_logits`, `logits`, `classification_logits`, `class_head_logits`, `class_probs`, `probs`, `probabilities`, or nested `classification.logits` / `classification.probs`.
+
+Logits are converted with softmax over `[real, synthetic, tampered]`. Probability vectors are converted to non-negative values and normalized. The evaluator does not silently set `p_tampered=0`; if no explicit class probability vector can be found it writes `probability_adapter_diagnostics.json` and partial `model_eval_records.jsonl`, then fails.
+
 Model IDs are not fixed. The historical IDs remain valid examples:
 
 - `pre_sns_baseline`
@@ -55,6 +61,7 @@ The external output root contains:
 - `model_eval_records.jsonl`
 - `model_eval_comparisons.jsonl`
 - `comparison_join_diagnostics.json`
+- `probability_adapter_diagnostics.json` when class probabilities cannot be adapted
 - `per_model_per_profile_metrics.json`
 - `robustness_drop_by_model.json`
 - `checkpoint_comparison_summary.json`

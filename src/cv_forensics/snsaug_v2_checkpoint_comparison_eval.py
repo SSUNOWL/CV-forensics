@@ -459,6 +459,157 @@ def _norm_label(value: Any) -> str:
     return "real"
 
 
+def _as_float_list(value: Any) -> list[float] | None:
+    if value is None:
+        return None
+    if hasattr(value, "detach"):
+        value = value.detach().cpu().tolist()
+    if hasattr(value, "tolist"):
+        value = value.tolist()
+    if isinstance(value, dict):
+        values = [value.get(label) for label in CLASS_LABELS]
+    elif isinstance(value, (list, tuple)):
+        values = list(value)
+        while len(values) == 1 and isinstance(values[0], (list, tuple)):
+            values = list(values[0])
+    else:
+        return None
+    if len(values) < 3:
+        return None
+    try:
+        out = [float(values[index]) for index in range(3)]
+    except (TypeError, ValueError):
+        return None
+    if not all(math.isfinite(item) for item in out):
+        return None
+    return out
+
+
+def _softmax(values: list[float]) -> list[float]:
+    max_value = max(values)
+    exps = [math.exp(value - max_value) for value in values]
+    total = sum(exps) or 1.0
+    return [value / total for value in exps]
+
+
+def _normalize_probability_values(values: list[float]) -> list[float] | None:
+    clamped = [max(0.0, value) for value in values]
+    total = sum(clamped)
+    if total <= 0.0:
+        return None
+    return [value / total for value in clamped]
+
+
+def _nested_keys(value: Any, prefix: str = "") -> list[str]:
+    if not isinstance(value, dict):
+        return []
+    keys: list[str] = []
+    for key, child in value.items():
+        name = f"{prefix}.{key}" if prefix else str(key)
+        keys.append(name)
+        if isinstance(child, dict):
+            keys.extend(_nested_keys(child, name))
+    return keys
+
+
+def _get_nested(value: dict[str, Any], path: tuple[str, ...]) -> Any:
+    current: Any = value
+    for part in path:
+        if not isinstance(current, dict) or part not in current:
+            return None
+        current = current[part]
+    return current
+
+
+def _normalize_class_probabilities(row: dict[str, Any]) -> dict[str, Any] | None:
+    """Extract standard real/synthetic/tampered probabilities from known schemas."""
+
+    direct = [row.get("p_real"), row.get("p_synthetic"), row.get("p_tampered")]
+    if all(value is not None for value in direct):
+        values = _as_float_list(direct)
+        probs = _normalize_probability_values(values) if values is not None else None
+        if probs is not None:
+            return {
+                "p_real": probs[0],
+                "p_synthetic": probs[1],
+                "p_tampered": probs[2],
+                "pred_class": row.get("pred_class") or CLASS_LABELS[probs.index(max(probs))],
+                "probability_source": "record_fields",
+            }
+
+    containers: list[dict[str, Any]] = [row]
+    for field in ("output", "model_output", "outputs", "raw_output", "inference_output"):
+        nested = row.get(field)
+        if isinstance(nested, dict):
+            containers.append(nested)
+
+    logit_paths = (
+        ("class_logits",),
+        ("logits",),
+        ("classification_logits",),
+        ("class_head_logits",),
+        ("classification", "logits"),
+    )
+    prob_paths = (
+        ("class_probs",),
+        ("probs",),
+        ("probabilities",),
+        ("classification", "probs"),
+    )
+    for container in containers:
+        for path in logit_paths:
+            values = _as_float_list(_get_nested(container, path))
+            if values is None:
+                continue
+            probs = _softmax(values)
+            return {
+                "p_real": probs[0],
+                "p_synthetic": probs[1],
+                "p_tampered": probs[2],
+                "pred_class": row.get("pred_class") or CLASS_LABELS[probs.index(max(probs))],
+                "probability_source": ".".join(path),
+            }
+        for path in prob_paths:
+            values = _as_float_list(_get_nested(container, path))
+            if values is None:
+                continue
+            probs = _normalize_probability_values(values)
+            if probs is None:
+                continue
+            return {
+                "p_real": probs[0],
+                "p_synthetic": probs[1],
+                "p_tampered": probs[2],
+                "pred_class": row.get("pred_class") or CLASS_LABELS[probs.index(max(probs))],
+                "probability_source": ".".join(path),
+            }
+    return None
+
+
+def _probability_adapter_diagnostics(
+    *,
+    model: dict[str, Any],
+    raw_record: dict[str, Any] | None,
+    normalized_record: dict[str, Any] | None,
+    source_row: dict[str, Any] | None,
+) -> dict[str, Any]:
+    raw = raw_record if isinstance(raw_record, dict) else {}
+    return {
+        "marker": MARKER,
+        "model_id": model.get("model_id"),
+        "model_kind": model.get("model_kind"),
+        "checkpoint_path": model.get("model_path"),
+        "raw_output_keys": sorted(str(key) for key in raw.keys()),
+        "record_keys": sorted(str(key) for key in (normalized_record or {}).keys()),
+        "available_nested_keys": _nested_keys(raw),
+        "sample": {
+            "base_id": (source_row or raw).get("base_id"),
+            "profile": (source_row or raw).get("profile"),
+            "content_label": (source_row or raw).get("content_label"),
+        },
+    }
+
+
 def _macro_f1(labels: list[str], preds: list[str]) -> float:
     values: list[float] = []
     for label in CLASS_LABELS:
@@ -776,9 +927,10 @@ def _normalize_record(row: dict[str, Any], model: dict[str, Any]) -> dict[str, A
     label = _norm_label(row.get("content_label"))
     valid_iou = row.get("valid_iou") if label == "tampered" else None
     raw_iou = row.get("raw_iou") if label == "tampered" else None
-    p_real = row.get("p_real")
-    p_synthetic = row.get("p_synthetic")
-    p_tampered = row.get("p_tampered")
+    probabilities = _normalize_class_probabilities(row) or {}
+    p_real = probabilities.get("p_real")
+    p_synthetic = probabilities.get("p_synthetic")
+    p_tampered = probabilities.get("p_tampered")
     return {
         "marker": MARKER,
         "model_id": model["model_id"],
@@ -790,10 +942,11 @@ def _normalize_record(row: dict[str, Any], model: dict[str, Any]) -> dict[str, A
         "profile": str(row.get("profile") or ("clean" if str(row.get("view") or "") == "clean" else "unknown")),
         "view": str(row.get("view") or ""),
         "content_label": label,
-        "pred_class": _norm_label(row.get("pred_class")),
+        "pred_class": _norm_label(probabilities.get("pred_class")),
         "p_real": float(p_real) if p_real is not None else None,
         "p_synthetic": float(p_synthetic) if p_synthetic is not None else None,
         "p_tampered": float(p_tampered) if p_tampered is not None else None,
+        "probability_source": probabilities.get("probability_source"),
         "localization_activated": bool(row.get("localization_activated")),
         "pred_mask_area_pct": float(row.get("final_mask_area_pct") or 0.0),
         "gt_mask_area_pct": _mask_area_pct(row.get("tamper_mask_path")),
@@ -842,7 +995,19 @@ def _evaluate_model_records(
             except ValueError:
                 pass
     records = [_normalize_record(row, model) for row in raw_records]
-    if any(record.get("p_tampered") is None for record in records):
+    missing_indexes = [index for index, record in enumerate(records) if record.get("p_tampered") is None]
+    if missing_indexes:
+        first = missing_indexes[0]
+        _write_json(
+            output_root / "probability_adapter_diagnostics.json",
+            _probability_adapter_diagnostics(
+                model=model,
+                raw_record=raw_records[first] if first < len(raw_records) else None,
+                normalized_record=records[first] if first < len(records) else None,
+                source_row=rows[first] if first < len(rows) else None,
+            ),
+        )
+        _write_jsonl(output_root / "model_eval_records.jsonl", records)
         raise SNSAugV2CheckpointComparisonEvalError(f"model {model['model_id']} produced records without p_tampered")
     return records
 
@@ -883,7 +1048,7 @@ def sanity_check_outputs(
         raise SNSAugV2CheckpointComparisonEvalError("checkpoint comparison sanity failed: model_eval_records is empty")
     if not summary.get("comparisons"):
         raise SNSAugV2CheckpointComparisonEvalError("checkpoint comparison sanity failed: comparisons is empty")
-    if records and any("p_tampered" not in row for row in records):
+    if records and any(row.get("p_tampered") is None for row in records):
         raise SNSAugV2CheckpointComparisonEvalError("checkpoint comparison sanity failed: model_eval_records missing p_tampered")
     profile_metrics = [metrics for profiles in per_profile.values() for metrics in profiles.values()]
     if profile_metrics and all(float(metrics.get("accuracy") or 0.0) == 1.0 for metrics in profile_metrics):
