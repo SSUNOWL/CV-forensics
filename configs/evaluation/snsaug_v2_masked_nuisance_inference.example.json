@@ -1,0 +1,40 @@
+{
+  "schema_version": "1.0",
+  "config_kind": "approved_snsaug_v2_masked_nuisance_inference",
+  "execution_mode": "approved_local_snsaug_v2_masked_nuisance_inference",
+  "user_approval_text": "I_APPROVE_SNSAUG_V2_MASKED_NUISANCE_INFERENCE",
+  "best_bundle_path": "/home/rlatjswo/projects/cv-forensics/.local/pre_sns_current_best_model_bundle.json",
+  "pair_root": "/home/rlatjswo/cvf_runs/snsaug_v2_0058c_small_val_pairs_20pc_balanced_YYYYMMDD_HHMMSS",
+  "meta_jsonl_path": "/home/rlatjswo/cvf_runs/snsaug_v2_0058c_small_val_pairs_20pc_balanced_YYYYMMDD_HHMMSS/meta.jsonl",
+  "approved_input_roots": [
+    "/home/rlatjswo/projects/cv-forensics/.local",
+    "/home/rlatjswo/cvf_runs/snsaug_v2_0058c_small_val_pairs_20pc_balanced_YYYYMMDD_HHMMSS"
+  ],
+  "approved_output_roots": [
+    "/home/rlatjswo/cvf_runs"
+  ],
+  "output_root": "/home/rlatjswo/cvf_runs/snsaug_v2_0067_masked_nuisance_inference_YYYYMMDD_HHMMSS",
+  "policies": [
+    "original",
+    "gray_fill",
+    "blur_fill",
+    "mean_fill",
+    "black_fill",
+    "dilated_gray_fill"
+  ],
+  "profiles": [
+    "clean",
+    "tiktok_like",
+    "instagram_story_like",
+    "youtube_shorts_like",
+    "combined_sns_realistic"
+  ],
+  "device": "cpu",
+  "max_samples": 30,
+  "dilation_radius": 1,
+  "top_n_gallery": 12,
+  "no_training": true,
+  "no_finetune": true,
+  "no_network": true,
+  "no_download": true
+}
