@@ -41,6 +41,7 @@ REQUIRED_OUTPUTS = (
     "masked_nuisance_inference_summary.json",
     "masked_nuisance_inference_report.md",
     "visual_gallery_manifest.json",
+    "artifact_manifest.json",
 )
 
 
@@ -96,6 +97,7 @@ def load_snsaug_v2_masked_nuisance_inference_config(path: str | Path) -> dict[st
         raw = json.load(handle)
     if not isinstance(raw, dict):
         raise SNSAugV2MaskedNuisanceInferenceError("masked nuisance inference config root must be a JSON object")
+    raw.setdefault("config_path", str(_real(path)))
     return raw
 
 
@@ -538,6 +540,16 @@ def promising_policies(recovery: dict[str, dict[str, dict[str, Any]]]) -> list[d
     return out
 
 
+def _counts(records: list[dict[str, Any]], key: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in records:
+        value = str(row.get(key) or "")
+        if not value:
+            continue
+        counts[value] = counts.get(value, 0) + 1
+    return counts
+
+
 def build_plan(config: dict[str, Any]) -> dict[str, Any]:
     output_root = _real(config["output_root"])
     return {
@@ -623,6 +635,34 @@ def run_snsaug_v2_masked_nuisance_inference(config: dict[str, Any], *, dry_run: 
         "masked_nuisance_inference_report": _write_text(output_root / "masked_nuisance_inference_report.md", _render_report(summary, recovery)),
         "visual_gallery_manifest": _write_json(output_root / "visual_gallery_manifest.json", gallery),
     }
+    artifact_path = str(output_root / "artifact_manifest.json")
+    artifact_output_paths = {**output_paths, "artifact_manifest": artifact_path}
+    artifact = {
+        "marker": MARKER,
+        "config_path": config.get("config_path"),
+        "output_root": str(output_root),
+        "pair_root": str(_real(config["pair_root"])),
+        "best_bundle_path": str(_real(config["best_bundle_path"])),
+        "policies": list(config.get("policies") or []),
+        "profiles": list(config.get("profiles") or []),
+        "subset_only": config.get("max_samples") is not None,
+        "max_rows": config.get("max_samples"),
+        "no_training": True,
+        "no_finetune": True,
+        "no_network": True,
+        "no_download": True,
+        "inference_started": True,
+        "training_started": False,
+        "record_count": len(records),
+        "row_count": len(parsed_rows),
+        "policy_counts": _counts(records, "policy"),
+        "profile_counts": _counts(records, "profile"),
+        "label_counts": _counts(records, "content_label"),
+        "output_paths": artifact_output_paths,
+        "warning_count": len(parse_warnings),
+        "warnings": parse_warnings,
+    }
+    output_paths["artifact_manifest"] = _write_json(output_root / "artifact_manifest.json", artifact)
     return {**summary, "output_paths": output_paths}
 
 

@@ -246,10 +246,11 @@ def test_tiny_run_writes_summary_and_records() -> None:
     root = temp_root("cvf_0067_run_")
     pair_root, meta_path, bundle_path = write_fixture(root)
     cfg = safe_config(root, pair_root, meta_path, bundle_path)
+    cfg["config_path"] = str(root / "masked_config.json")
     summary = run_snsaug_v2_masked_nuisance_inference(cfg, dry_run=False)
     assert_true(summary["inference_started"] is True, "inference started")
     assert_true(summary["record_count"] > 0, "records produced")
-    for key in ("model_eval_records_masked", "per_policy_per_profile_metrics", "clean_vs_sns_masked_delta", "masked_nuisance_inference_summary", "masked_nuisance_inference_report", "visual_gallery_manifest"):
+    for key in ("model_eval_records_masked", "per_policy_per_profile_metrics", "clean_vs_sns_masked_delta", "masked_nuisance_inference_summary", "masked_nuisance_inference_report", "visual_gallery_manifest", "artifact_manifest"):
         path = Path(summary["output_paths"][key])
         assert_true(path.exists(), f"{key} exists")
         assert_true(not str(path).startswith(str(REPO_ROOT)), f"{key} outside repo")
@@ -257,6 +258,18 @@ def test_tiny_run_writes_summary_and_records() -> None:
     assert_true(any(row["policy"] == "gray_fill" for row in rows), "gray_fill rows written")
     metrics = json.loads(Path(summary["output_paths"]["per_policy_per_profile_metrics"]).read_text(encoding="utf-8"))
     assert_true("original" in metrics and "gray_fill" in metrics, "per-policy metrics written")
+    artifact = json.loads(Path(summary["output_paths"]["artifact_manifest"]).read_text(encoding="utf-8"))
+    assert_equal(artifact["marker"], MARKER, "artifact marker")
+    assert_equal(artifact["config_path"], cfg["config_path"], "artifact config path")
+    assert_equal(artifact["record_count"], summary["record_count"], "artifact record count")
+    assert_true(artifact["row_count"] > 0, "artifact row count")
+    assert_true(artifact["policy_counts"]["gray_fill"] > 0, "artifact policy counts")
+    assert_true(artifact["profile_counts"]["tiktok_like"] > 0, "artifact profile counts")
+    assert_true(artifact["label_counts"]["tampered"] > 0, "artifact label counts")
+    assert_true(artifact["no_training"] is True and artifact["no_finetune"] is True, "artifact guardrails")
+    assert_true("output_paths" in artifact, "artifact output paths")
+    for path in artifact["output_paths"].values():
+        assert_true(Path(path).exists(), f"artifact listed output exists: {path}")
 
 
 def test_docs_marker_present() -> None:

@@ -29,6 +29,7 @@ Real runs write:
 - `masked_nuisance_inference_summary.json`
 - `masked_nuisance_inference_report.md`
 - `visual_gallery_manifest.json`
+- `artifact_manifest.json`
 
 Metrics are grouped by masking policy and profile: accuracy, macro-F1, real FPR, synthetic recall, tampered recall, localization activation recall, valid IoU, non-tampered high-mask rate, mean `p_tampered` on tampered rows, and nuisance mask area ratio.
 
@@ -41,3 +42,5 @@ Recovery metrics compare each masked policy against `original` for the same prof
 - `real_fpr_change`
 
 A policy is marked promising only when tampered recall and valid IoU improve on at least two SNS platform profiles, synthetic recall does not collapse, and real FPR does not increase severely.
+
+`artifact_manifest.json` is written on every successful actual run. It records the config path, pair root, output root, frozen bundle path, policies, profiles, row and record counts, per-policy/profile/label counts, all output paths, warnings, and guardrail flags.
