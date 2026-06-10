@@ -1,0 +1,43 @@
+{
+  "schema_version": "1.0",
+  "config_kind": "approved_snsaug_v2_geometry_degradation_recovery",
+  "execution_mode": "approved_local_snsaug_v2_geometry_degradation_recovery",
+  "user_approval_text": "I_APPROVE_SNSAUG_V2_GEOMETRY_DEGRADATION_RECOVERY",
+  "best_bundle_path": "/home/rlatjswo/projects/cv-forensics/.local/pre_sns_current_best_model_bundle.json",
+  "pair_root": "/home/rlatjswo/cvf_runs/snsaug_v2_0058c_small_val_pairs_20pc_balanced_YYYYMMDD_HHMMSS",
+  "meta_jsonl_path": "/home/rlatjswo/cvf_runs/snsaug_v2_0058c_small_val_pairs_20pc_balanced_YYYYMMDD_HHMMSS/meta.jsonl",
+  "approved_input_roots": [
+    "/home/rlatjswo/projects/cv-forensics/.local",
+    "/home/rlatjswo/cvf_runs/snsaug_v2_0058c_small_val_pairs_20pc_balanced_YYYYMMDD_HHMMSS"
+  ],
+  "approved_output_roots": [
+    "/home/rlatjswo/cvf_runs"
+  ],
+  "output_root": "/home/rlatjswo/cvf_runs/snsaug_v2_0069_geometry_degradation_recovery_YYYYMMDD_HHMMSS",
+  "policies": [
+    "original",
+    "content_box_crop_resize",
+    "geometry_normalized",
+    "deblock_mild",
+    "resize_to_clean_proxy",
+    "geometry_plus_deblock",
+    "oracle_clean_geometry_diagnostic"
+  ],
+  "profiles": [
+    "clean",
+    "canvas_9x16_only",
+    "resize_crop_pad",
+    "zoom_crop",
+    "resize_jpeg",
+    "screenshot_recapture_light",
+    "combined_sns_realistic"
+  ],
+  "device": "cpu",
+  "max_samples": 30,
+  "top_n_gallery": 12,
+  "content_background_tolerance": 10,
+  "no_training": true,
+  "no_finetune": true,
+  "no_network": true,
+  "no_download": true
+}
