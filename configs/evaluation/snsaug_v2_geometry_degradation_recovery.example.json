@@ -21,6 +21,12 @@
     "deblock_mild",
     "resize_to_clean_proxy",
     "geometry_plus_deblock",
+    "border_trim_v2",
+    "edge_density_content_box_v2",
+    "letterbox_unpad_resize_v2",
+    "screenshot_frame_trim_v2",
+    "multi_candidate_geometry_v2",
+    "multi_candidate_geometry_plus_deblock_v2",
     "oracle_clean_geometry_diagnostic"
   ],
   "profiles": [

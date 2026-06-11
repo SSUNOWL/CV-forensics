@@ -21,12 +21,18 @@ from cv_forensics.snsaug_v2_geometry_degradation_recovery import (  # noqa: E402
     MARKER,
     aggregate_per_policy_profile,
     apply_recovery_policy,
+    border_trim_v2,
     content_box_crop_resize,
     deblock_mild,
+    edge_density_content_box_v2,
     estimate_content_box,
+    letterbox_unpad_resize_v2,
     load_snsaug_v2_geometry_degradation_recovery_config,
+    oracle_gap_closure_summary,
     recovery_delta_summary,
     run_snsaug_v2_geometry_degradation_recovery,
+    select_best_geometry_candidate_v2,
+    transform_mask_like_image,
     validate_snsaug_v2_geometry_degradation_recovery_config,
 )
 
@@ -152,6 +158,30 @@ def write_fixture(root: Path) -> tuple[Path, Path, Path]:
                         "fixture_long256_report": clean_fixture,
                         "fixture_v2_probability_mask": [float(value) for value in (tamper_mask if label == "tampered" else empty_mask)],
                     },
+                    "border_trim_v2": {
+                        "fixture_long256_report": clean_fixture,
+                        "fixture_v2_probability_mask": [float(value) for value in (tamper_mask if label == "tampered" else empty_mask)],
+                    },
+                    "edge_density_content_box_v2": {
+                        "fixture_long256_report": clean_fixture,
+                        "fixture_v2_probability_mask": [float(value) for value in (tamper_mask if label == "tampered" else empty_mask)],
+                    },
+                    "letterbox_unpad_resize_v2": {
+                        "fixture_long256_report": clean_fixture,
+                        "fixture_v2_probability_mask": [float(value) for value in (tamper_mask if label == "tampered" else empty_mask)],
+                    },
+                    "screenshot_frame_trim_v2": {
+                        "fixture_long256_report": clean_fixture,
+                        "fixture_v2_probability_mask": [float(value) for value in (tamper_mask if label == "tampered" else empty_mask)],
+                    },
+                    "multi_candidate_geometry_v2": {
+                        "fixture_long256_report": clean_fixture,
+                        "fixture_v2_probability_mask": [float(value) for value in (tamper_mask if label == "tampered" else empty_mask)],
+                    },
+                    "multi_candidate_geometry_plus_deblock_v2": {
+                        "fixture_long256_report": clean_fixture,
+                        "fixture_v2_probability_mask": [float(value) for value in (tamper_mask if label == "tampered" else empty_mask)],
+                    },
                     "oracle_clean_geometry_diagnostic": {
                         "fixture_long256_report": clean_fixture,
                         "fixture_v2_probability_mask": [float(value) for value in (tamper_mask if label == "tampered" else empty_mask)],
@@ -178,7 +208,20 @@ def safe_config(root: Path, pair_root: Path, meta_path: Path, bundle_path: Path)
         "approved_input_roots": [str(root / "bundle"), str(pair_root)],
         "approved_output_roots": [str(root / "reports")],
         "output_root": str(root / "reports" / "recovery"),
-        "policies": ["original", "content_box_crop_resize", "deblock_mild", "geometry_normalized", "geometry_plus_deblock", "oracle_clean_geometry_diagnostic"],
+        "policies": [
+            "original",
+            "content_box_crop_resize",
+            "deblock_mild",
+            "geometry_normalized",
+            "geometry_plus_deblock",
+            "border_trim_v2",
+            "edge_density_content_box_v2",
+            "letterbox_unpad_resize_v2",
+            "screenshot_frame_trim_v2",
+            "multi_candidate_geometry_v2",
+            "multi_candidate_geometry_plus_deblock_v2",
+            "oracle_clean_geometry_diagnostic",
+        ],
         "profiles": ["clean", "zoom_crop"],
         "device": "cpu",
         "max_samples": 10,
@@ -219,6 +262,51 @@ def test_content_box_crop_modifies_geometry_profiles() -> None:
     assert_true(info["diagnostic_oracle"] is False, "geometry policy not oracle")
 
 
+def test_v2_content_box_estimators_trim_borders() -> None:
+    image = Image.new("RGB", (20, 18), (5, 5, 5))
+    ImageDraw.Draw(image).rectangle((5, 4, 14, 13), fill=(220, 80, 40))
+    bordered, border_info = border_trim_v2(image, target_size=(10, 8), tolerance=10)
+    edged, edge_info = edge_density_content_box_v2(image, target_size=(10, 8))
+    unpadded, pad_info = letterbox_unpad_resize_v2(image, target_size=(10, 8), tolerance=10)
+    assert_equal(bordered.size, (10, 8), "border trim output target size")
+    assert_equal(edged.size, (10, 8), "edge density output target size")
+    assert_equal(unpadded.size, (10, 8), "letterbox unpad output target size")
+    assert_true(border_info["transform"]["box"] != (0, 0, 20, 18), "border trim crops")
+    assert_true(edge_info["transform"]["box"] != (0, 0, 20, 18), "edge density crops")
+    assert_true(pad_info["transform"]["box"] != (0, 0, 20, 18), "letterbox unpad crops")
+
+
+def test_mask_transform_follows_image_transform() -> None:
+    mask = Image.new("L", (20, 18), 0)
+    ImageDraw.Draw(mask).rectangle((5, 4, 14, 13), fill=255)
+    transform = {"op": "crop_resize", "box": (5, 4, 15, 14), "target_size": (10, 8)}
+    transformed = transform_mask_like_image(mask, transform, source_size=(20, 18))
+    assert_equal(transformed.size, (10, 8), "mask resized to policy geometry")
+    assert_true(sum(1 for value in transformed.getdata() if int(value) > 0) == 80, "mask crop preserved positive region")
+
+
+def test_oracle_gap_closure_handles_zero_oracle_gain() -> None:
+    per_policy = {
+        "original": {"zoom_crop": {"tampered_recall": 0.5, "tampered_valid_mean_iou": 0.2}},
+        "oracle_clean_geometry_diagnostic": {"zoom_crop": {"tampered_recall": 0.5, "tampered_valid_mean_iou": 0.2}},
+        "border_trim_v2": {"zoom_crop": {"tampered_recall": 0.6, "tampered_valid_mean_iou": 0.3}},
+    }
+    closure = oracle_gap_closure_summary(per_policy)
+    row = [item for item in closure["rows"] if item["policy"] == "border_trim_v2"][0]
+    assert_equal(row["tampered_recall_oracle_gap_closure"], 0.0, "zero oracle recall gain closure")
+    assert_equal(row["valid_iou_oracle_gap_closure"], 0.0, "zero oracle iou gain closure")
+
+
+def test_non_oracle_candidate_selection_is_image_only() -> None:
+    image = Image.new("RGB", (20, 18), (5, 5, 5))
+    ImageDraw.Draw(image).rectangle((5, 4, 14, 13), fill=(220, 80, 40))
+    first = select_best_geometry_candidate_v2(image, target_size=(10, 8), tolerance=10)
+    second = select_best_geometry_candidate_v2(image, target_size=(10, 8), tolerance=10)
+    assert_equal(first["selected"], second["selected"], "selection deterministic from image geometry")
+    assert_true("content_label" not in first["selected"], "selection does not expose labels")
+    assert_true("tamper_mask" not in first["selected"], "selection does not expose masks")
+
+
 def test_deblock_mild_keeps_image_size() -> None:
     image = Image.new("RGB", (12, 9), (20, 30, 40))
     filtered = deblock_mild(image)
@@ -249,17 +337,31 @@ def test_dry_run_writes_no_records_and_tiny_run_writes_outputs() -> None:
     assert_equal(before, set(os.listdir(REPO_ROOT)), "no repo writes")
     assert_true(summary["inference_started"] is True, "inference started")
     assert_true(summary["record_count"] > 0, "records produced")
-    for key in ("geometry_degradation_recovery_records", "per_policy_per_profile_metrics", "recovery_delta_summary", "geometry_degradation_recovery_report", "visual_gallery_manifest", "artifact_manifest"):
+    for key in (
+        "geometry_degradation_recovery_records",
+        "per_policy_per_profile_metrics",
+        "recovery_delta_summary",
+        "oracle_gap_closure_summary",
+        "content_box_candidate_diagnostics",
+        "geometry_degradation_recovery_report",
+        "geometry_estimation_report_0069b",
+        "visual_gallery_manifest",
+        "artifact_manifest",
+    ):
         path = Path(summary["output_paths"][key])
         assert_true(path.exists(), f"{key} exists")
         assert_true(not str(path).startswith(str(REPO_ROOT)), f"{key} outside repo")
     rows = [json.loads(line) for line in Path(summary["output_paths"]["geometry_degradation_recovery_records"]).read_text(encoding="utf-8").splitlines()]
     assert_true(any(row["policy"] == "geometry_normalized" for row in rows), "policy rows written")
     artifact = json.loads(Path(summary["output_paths"]["artifact_manifest"]).read_text(encoding="utf-8"))
+    closure = json.loads(Path(summary["output_paths"]["oracle_gap_closure_summary"]).read_text(encoding="utf-8"))
+    diagnostics = [json.loads(line) for line in Path(summary["output_paths"]["content_box_candidate_diagnostics"]).read_text(encoding="utf-8").splitlines()]
     assert_equal(artifact["marker"], MARKER, "artifact marker")
     assert_equal(artifact["record_count"], summary["record_count"], "artifact record count")
     assert_true(artifact["policy_counts"]["geometry_normalized"] > 0, "artifact policy counts")
     assert_true(artifact["no_training"] is True and artifact["no_download"] is True, "artifact guardrails")
+    assert_true(closure["by_policy"], "oracle gap closure summary not empty")
+    assert_true(any(row["policy"] == "multi_candidate_geometry_v2" for row in diagnostics), "candidate diagnostics written")
 
 
 def test_docs_marker_present() -> None:
@@ -272,6 +374,10 @@ def main() -> int:
         test_example_config_validates,
         test_config_validator_rejects_training_flags,
         test_content_box_crop_modifies_geometry_profiles,
+        test_v2_content_box_estimators_trim_borders,
+        test_mask_transform_follows_image_transform,
+        test_oracle_gap_closure_handles_zero_oracle_gain,
+        test_non_oracle_candidate_selection_is_image_only,
         test_deblock_mild_keeps_image_size,
         test_metrics_handle_missing_tampered_rows_safely,
         test_dry_run_writes_no_records_and_tiny_run_writes_outputs,
