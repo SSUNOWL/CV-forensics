@@ -1,0 +1,41 @@
+{
+  "schema_version": "1.0",
+  "config_kind": "approved_snsaug_v2_residual_degradation_analysis",
+  "execution_mode": "approved_local_snsaug_v2_residual_degradation_analysis",
+  "user_approval_text": "I_APPROVE_SNSAUG_V2_RESIDUAL_DEGRADATION_ANALYSIS",
+  "pair_root": "/home/rlatjswo/cvf_runs/snsaug_v2_0058c_small_val_pairs_20pc_balanced_YYYYMMDD_HHMMSS",
+  "meta_jsonl_path": "/home/rlatjswo/cvf_runs/snsaug_v2_0058c_small_val_pairs_20pc_balanced_YYYYMMDD_HHMMSS/meta.jsonl",
+  "baseline_records_path": "/home/rlatjswo/cvf_runs/snsaug_v2_0067_masked_nuisance_inference_YYYYMMDD_HHMMSS/model_eval_records_masked_original_only.jsonl",
+  "global_geometry_analysis_root": "/home/rlatjswo/cvf_runs/snsaug_v2_0068_global_degradation_geometry_analysis_YYYYMMDD_HHMMSS",
+  "geometry_recovery_root": "/home/rlatjswo/cvf_runs/snsaug_v2_0069b_geometry_degradation_recovery_YYYYMMDD_HHMMSS",
+  "approved_input_roots": [
+    "/home/rlatjswo/cvf_runs/snsaug_v2_0058c_small_val_pairs_20pc_balanced_YYYYMMDD_HHMMSS",
+    "/home/rlatjswo/cvf_runs/snsaug_v2_0067_masked_nuisance_inference_YYYYMMDD_HHMMSS",
+    "/home/rlatjswo/cvf_runs/snsaug_v2_0068_global_degradation_geometry_analysis_YYYYMMDD_HHMMSS",
+    "/home/rlatjswo/cvf_runs/snsaug_v2_0069b_geometry_degradation_recovery_YYYYMMDD_HHMMSS"
+  ],
+  "approved_output_roots": [
+    "/home/rlatjswo/cvf_runs"
+  ],
+  "output_root": "/home/rlatjswo/cvf_runs/snsaug_v2_0070_residual_degradation_analysis_YYYYMMDD_HHMMSS",
+  "profiles": [
+    "clean",
+    "canvas_9x16_only",
+    "resize_crop_pad",
+    "zoom_crop",
+    "recompression_light",
+    "resize_jpeg",
+    "screenshot_recapture_light",
+    "news_meme_overlay",
+    "platform_ui_same_size",
+    "tiktok_like",
+    "instagram_story_like",
+    "youtube_shorts_like",
+    "combined_sns_realistic"
+  ],
+  "max_samples": 100,
+  "no_training": true,
+  "no_finetune": true,
+  "no_network": true,
+  "no_download": true
+}
