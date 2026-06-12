@@ -1,0 +1,49 @@
+{
+  "schema_version": "1.0",
+  "config_kind": "approved_snsaug_v2_policy_gate_comparison",
+  "execution_mode": "approved_local_snsaug_v2_policy_gate_comparison",
+  "user_approval_text": "I_APPROVE_SNSAUG_V2_POLICY_GATE_COMPARISON",
+  "residual_records_path": "/home/rlatjswo/cvf_eval_outputs/snsaug_v2_0070a_residual_degradation_analysis_YYYYMMDD_HHMMSS/residual_degradation_records.jsonl",
+  "residual_feature_summary_path": "/home/rlatjswo/cvf_eval_outputs/snsaug_v2_0070a_residual_degradation_analysis_YYYYMMDD_HHMMSS/residual_feature_summary.json",
+  "residual_feature_response_correlation_path": "/home/rlatjswo/cvf_eval_outputs/snsaug_v2_0070a_residual_degradation_analysis_YYYYMMDD_HHMMSS/residual_feature_response_correlation.json",
+  "approved_input_roots": [
+    "/home/rlatjswo/cvf_eval_outputs/snsaug_v2_0070a_residual_degradation_analysis_YYYYMMDD_HHMMSS"
+  ],
+  "approved_output_roots": [
+    "/home/rlatjswo/cvf_eval_outputs"
+  ],
+  "output_root": "/home/rlatjswo/cvf_eval_outputs/snsaug_v2_0071_policy_gate_comparison_YYYYMMDD_HHMMSS",
+  "selectors": [
+    "fixed_original",
+    "geometry_feature_gate",
+    "residual_dct_feature_gate",
+    "mixed_feature_gate",
+    "oracle_best_policy_diagnostic"
+  ],
+  "focus_profiles": [
+    "canvas_9x16_only",
+    "resize_crop_pad",
+    "zoom_crop",
+    "recompression_light",
+    "resize_jpeg",
+    "screenshot_recapture_light",
+    "news_meme_overlay",
+    "platform_ui_same_size",
+    "tiktok_like",
+    "instagram_story_like",
+    "youtube_shorts_like",
+    "combined_sns_realistic"
+  ],
+  "success_criteria": {
+    "min_good_profiles": 2,
+    "min_tampered_recall_gain": 0.1,
+    "min_valid_iou_gain": 0.05,
+    "min_oracle_gap_closure": 0.4,
+    "max_mean_synthetic_recall_drop": 0.1,
+    "max_mean_real_fpr_increase": 0.2
+  },
+  "no_training": true,
+  "no_finetune": true,
+  "no_network": true,
+  "no_download": true
+}
