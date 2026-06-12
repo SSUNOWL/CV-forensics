@@ -86,6 +86,13 @@ def test_policy_gate_records_include_selectors() -> None:
     assert_true("residual_dct_feature_gate" in selectors, "residual gate present")
     assert_true("oracle_best_policy_diagnostic" in selectors, "oracle selector present")
     assert_true(any(row["selected_source"] == "clean" for row in records), "at least one gate selects clean")
+    assert_true(all(row.get("chosen_policy") for row in records), "chosen policy populated")
+    assert_true(all(row.get("selector_reason") for row in records), "selector reason populated")
+    assert_true(all("diagnostic_only_selector" in row for row in records), "diagnostic flag populated")
+    fixed = [row for row in records if row["selector"] == "fixed_original"]
+    assert_true(all(row["chosen_policy"] == "original" for row in fixed), "fixed original policy provenance")
+    oracle = [row for row in records if row["selector"] == "oracle_best_policy_diagnostic"]
+    assert_true(all(row["diagnostic_only_selector"] is True for row in oracle), "oracle selector diagnostic")
 
 
 def test_decision_prefers_deployable_when_gate_improves_profiles() -> None:
@@ -123,6 +130,39 @@ def test_run_writes_outputs() -> None:
     assert_equal(summary["marker"], MARKER, "run marker")
     for path in summary["output_paths"].values():
         assert_true(Path(path).exists(), f"output exists: {path}")
+    assert_true(Path(summary["output_paths"]["policy_gate_report"]).exists(), "policy gate report exists")
+    assert_true(Path(summary["output_paths"]["policy_gate_comparison_report"]).exists(), "policy gate comparison report exists")
+    artifact = json.loads(Path(summary["output_paths"]["artifact_manifest"]).read_text(encoding="utf-8"))
+    assert_true("policy_gate_report" in artifact["output_paths"], "artifact lists report")
+    assert_true("policy_gate_comparison_report" in artifact["output_paths"], "artifact lists comparison report")
+    rows = [json.loads(line) for line in Path(summary["output_paths"]["policy_gate_records"]).read_text(encoding="utf-8").splitlines()]
+    assert_true(rows and all(row.get("chosen_policy") for row in rows), "run records have chosen policy")
+    assert_true(any(row["selector"] == "fixed_original" and row["chosen_policy"] == "original" for row in rows), "run fixed original provenance")
+
+
+def test_dry_run_writes_no_records() -> None:
+    root = temp_root("cvf_0071_dry_")
+    records_path = root / "input" / "residual_degradation_records.jsonl"
+    records_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg = {
+        "schema_version": "1.0",
+        "config_kind": "approved_snsaug_v2_policy_gate_comparison",
+        "execution_mode": "approved_local_snsaug_v2_policy_gate_comparison",
+        "user_approval_text": "I_APPROVE_SNSAUG_V2_POLICY_GATE_COMPARISON",
+        "residual_records_path": str(records_path),
+        "approved_input_roots": [str(records_path.parent)],
+        "approved_output_roots": [str(root / "reports")],
+        "output_root": str(root / "reports" / "policy_gate"),
+        "focus_profiles": ["zoom_crop", "resize_jpeg"],
+        "selectors": ["fixed_original", "mixed_feature_gate", "oracle_best_policy_diagnostic"],
+        "no_training": True,
+        "no_finetune": True,
+        "no_network": True,
+        "no_download": True,
+    }
+    summary = run_snsaug_v2_policy_gate_comparison(cfg, dry_run=True)
+    assert_true(summary["dry_run"] is True, "dry-run summary")
+    assert_true(not Path(summary["output_paths"]["policy_gate_records"]).exists(), "dry-run writes no records")
 
 
 def main() -> None:
@@ -130,6 +170,7 @@ def main() -> None:
     test_policy_gate_records_include_selectors()
     test_decision_prefers_deployable_when_gate_improves_profiles()
     test_run_writes_outputs()
+    test_dry_run_writes_no_records()
     print("SNSAUG_V2_POLICY_GATE_COMPARISON_TESTS_OK")
 
 

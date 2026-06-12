@@ -244,6 +244,50 @@ def _choose_source(row: dict[str, Any], selector: str, thresholds: dict[str, flo
     return "sns"
 
 
+def _selector_provenance(row: dict[str, Any], selector: str, source: str, thresholds: dict[str, float]) -> dict[str, Any]:
+    geometry_score = _num(row.get("_geometry_gate_score"))
+    residual_score = _num(row.get("_residual_gate_score"))
+    geometry_pass = geometry_score >= thresholds.get("geometry", 0.0)
+    residual_pass = residual_score >= thresholds.get("residual", 0.0)
+    diagnostic = selector.startswith("oracle") or selector.endswith("diagnostic")
+    if selector == "fixed_original":
+        chosen_policy = "original"
+        reason = "fixed_original_selector"
+    elif selector == "oracle_best_policy_diagnostic":
+        chosen_policy = "oracle_clean_policy" if source == "clean" else "original"
+        reason = "oracle_best_clean_or_original_by_label_iou_and_p_tampered"
+    elif selector == "geometry_feature_gate":
+        chosen_policy = "geometry_feature_clean_policy" if source == "clean" else "original"
+        reason = "geometry_score_passed_threshold" if source == "clean" else "geometry_score_below_threshold"
+    elif selector == "residual_dct_feature_gate":
+        chosen_policy = "residual_dct_clean_policy" if source == "clean" else "original"
+        reason = "residual_score_passed_threshold" if source == "clean" else "residual_score_below_threshold"
+    elif selector == "mixed_feature_gate":
+        if source != "clean":
+            chosen_policy = "original"
+            reason = "geometry_and_residual_scores_below_threshold"
+        elif geometry_pass and residual_pass:
+            chosen_policy = "mixed_geometry_residual_clean_policy"
+            reason = "geometry_and_residual_scores_passed_threshold"
+        elif geometry_pass:
+            chosen_policy = "geometry_feature_clean_policy"
+            reason = "geometry_score_passed_threshold"
+        else:
+            chosen_policy = "residual_dct_clean_policy"
+            reason = "residual_score_passed_threshold"
+    else:
+        chosen_policy = "original" if source == "sns" else f"{selector}_clean_policy"
+        reason = "fallback_selector_mapping"
+    return {
+        "chosen_policy": chosen_policy,
+        "selector_reason": reason,
+        "diagnostic_only_selector": diagnostic,
+        "geometry_score": geometry_score,
+        "residual_score": residual_score,
+        "selected_by_profile_family": row.get("profile_family"),
+    }
+
+
 def build_policy_gate_records(records: list[dict[str, Any]], selectors: list[str] | None = None) -> list[dict[str, Any]]:
     selectors = selectors or DEFAULT_SELECTORS
     scales = {feature: max(_pct([_num(row.get(feature)) for row in records], 0.75), 1e-9) for feature in GEOMETRY_FEATURES + RESIDUAL_FEATURES}
@@ -261,12 +305,14 @@ def build_policy_gate_records(records: list[dict[str, Any]], selectors: list[str
     for row in enriched:
         for selector in selectors:
             source = _choose_source(row, selector, thresholds)
+            provenance = _selector_provenance(row, selector, source, thresholds)
             p_tampered = _num(row.get(f"p_tampered_{source}"))
             out.append(
                 {
                     "marker": MARKER,
                     "selector": selector,
                     "selected_source": source,
+                    **provenance,
                     "base_id": row.get("base_id"),
                     "profile": row.get("profile"),
                     "profile_family": row.get("profile_family"),
@@ -369,6 +415,7 @@ def _paths(output_root: Path) -> dict[str, str]:
         "policy_gate_metrics": str(output_root / "policy_gate_metrics.json"),
         "policy_gate_oracle_gap_summary": str(output_root / "policy_gate_oracle_gap_summary.json"),
         "policy_gate_report": str(output_root / "policy_gate_report.md"),
+        "policy_gate_comparison_report": str(output_root / "policy_gate_comparison_report.md"),
         "artifact_manifest": str(output_root / "artifact_manifest.json"),
     }
 
@@ -441,6 +488,8 @@ def run_snsaug_v2_policy_gate_comparison(config: dict[str, Any], dry_run: bool =
     _write_jsonl(Path(paths["policy_gate_records"]), records)
     _write_json(Path(paths["policy_gate_metrics"]), {"marker": MARKER, "metrics": metrics, "decision": decision})
     _write_json(Path(paths["policy_gate_oracle_gap_summary"]), {"marker": MARKER, "base_selector": "fixed_original", "oracle_selector": "oracle_best_policy_diagnostic", "decision": decision})
-    Path(paths["policy_gate_report"]).write_text(_report(summary, decision), encoding="utf-8")
+    report_text = _report(summary, decision)
+    Path(paths["policy_gate_report"]).write_text(report_text, encoding="utf-8")
+    Path(paths["policy_gate_comparison_report"]).write_text(report_text, encoding="utf-8")
     _write_json(Path(paths["artifact_manifest"]), summary)
     return summary
