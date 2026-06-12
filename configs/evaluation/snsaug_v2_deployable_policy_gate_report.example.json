@@ -1,0 +1,18 @@
+{
+  "schema_version": "1.0",
+  "config_kind": "approved_snsaug_v2_deployable_policy_gate_report",
+  "execution_mode": "approved_local_snsaug_v2_deployable_policy_gate_report",
+  "user_approval_text": "I_APPROVE_SNSAUG_V2_DEPLOYABLE_POLICY_GATE_REPORT",
+  "policy_gate_output_root": "/home/rlatjswo/cvf_eval_outputs/snsaug_v2_0071a_policy_gate_comparison_YYYYMMDD_HHMMSS",
+  "approved_input_roots": [
+    "/home/rlatjswo/cvf_eval_outputs/snsaug_v2_0071a_policy_gate_comparison_YYYYMMDD_HHMMSS"
+  ],
+  "approved_output_roots": [
+    "/home/rlatjswo/cvf_eval_outputs"
+  ],
+  "output_root": "/home/rlatjswo/cvf_eval_outputs/snsaug_v2_0072_deployable_policy_gate_report_YYYYMMDD_HHMMSS",
+  "no_training": true,
+  "no_finetune": true,
+  "no_network": true,
+  "no_download": true
+}
