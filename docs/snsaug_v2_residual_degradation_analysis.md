@@ -48,12 +48,16 @@ Successful actual runs write:
 
 The correlation file includes overall, per-label, and per-profile-family Pearson/Spearman summaries. Constant feature or target vectors produce `null` correlations rather than failing.
 
+The decision parser supports both flat correlation rows and nested correlation dictionaries. Nested entries such as `dct_high_low_ratio_delta_abs -> activation_flip_off -> abs_pearson_r` are flattened into top-correlation rows with `feature`, `target`, `score`, `pearson_r`, `spearman_r`, `pair_count`, `feature_group`, and `path`. A successful run writes these ranked rows under `top_correlations`, and `residual_degradation_report.md` renders them in the Top Correlations table.
+
 ## Decision
 
 The decision rule is diagnostic:
 
-- Strong residual/DCT/SRM correlations recommend `train_0071_lightweight_residual_dct_branch`.
-- Strong geometry correlations recommend one more geometry-normalized preprocessing refinement.
-- Weak correlations recommend revisiting calibration or class-head robustness.
+- `residual_dct_signal_dominant`: strong DCT/SRM/high-pass/residual/blockiness/edge signal; recommend `train_0071_lightweight_residual_dct_branch`.
+- `geometry_still_dominant_or_mixed`: geometry remains dominant; recommend one more geometry-normalized preprocessing refinement.
+- `mixed_low_level_and_geometry_signal`: both residual and geometry signals matter; compare residual branch training against geometry preprocessing.
+- `weak_low_level_signal`: weak correlations; revisit calibration or class-head robustness.
+- `correlation_parser_failed_or_empty`: no valid correlation values could be flattened.
 
 This task should decide whether 0071 should train a lightweight residual/DCT branch; it does not start that training.

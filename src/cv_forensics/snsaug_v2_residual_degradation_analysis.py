@@ -690,6 +690,90 @@ def correlation_report(records: list[dict[str, Any]]) -> dict[str, Any]:
     return {"marker": MARKER, "overall": overall, "by_label": by_label, "by_profile_family": by_family}
 
 
+def feature_group(feature: str) -> str:
+    lowered = str(feature or "").lower()
+    if any(token in lowered for token in ("dct", "srm", "residual", "highpass", "high_pass", "blockiness", "laplacian", "sobel", "edge")):
+        return "residual_dct"
+    if any(token in lowered for token in ("ignore", "occlud", "mask_area", "tamper_occluded", "tamper_area")):
+        return "local_nuisance"
+    if any(token in lowered for token in ("crop", "scale", "aspect", "area_ratio", "width", "height", "geometry")):
+        return "geometry"
+    if any(token in lowered for token in ("histogram", "mean", "std", "color")):
+        return "color_histogram"
+    return "other"
+
+
+def _float_or_none(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        out = float(value)
+    except Exception:
+        return None
+    return out if math.isfinite(out) else None
+
+
+def _looks_like_correlation_entry(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    return any(key in value for key in ("abs_pearson_r", "abs_spearman_r", "pearson_r", "spearman_r"))
+
+
+def _correlation_row_from_entry(entry: dict[str, Any], path: list[str]) -> dict[str, Any] | None:
+    feature = entry.get("feature")
+    target = entry.get("target")
+    if feature is None or target is None:
+        if len(path) < 2:
+            return None
+        feature = path[-2]
+        target = path[-1]
+    pearson = _float_or_none(entry.get("pearson_r"))
+    spearman = _float_or_none(entry.get("spearman_r"))
+    abs_pearson = _float_or_none(entry.get("abs_pearson_r"))
+    abs_spearman = _float_or_none(entry.get("abs_spearman_r"))
+    score = max(value for value in (abs_pearson, abs_spearman, abs(pearson) if pearson is not None else None, abs(spearman) if spearman is not None else None, 0.0) if value is not None)
+    if score <= 0.0:
+        return None
+    pair_count = entry.get("pair_count")
+    return {
+        "feature": str(feature),
+        "target": str(target),
+        "score": float(score),
+        "pearson_r": pearson,
+        "spearman_r": spearman,
+        "pair_count": int(pair_count) if isinstance(pair_count, int) or (isinstance(pair_count, float) and pair_count.is_integer()) else pair_count,
+        "feature_group": feature_group(str(feature)),
+        "path": ".".join(path),
+    }
+
+
+def flatten_correlation_schema(payload: Any, *, limit: int | None = None) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+
+    def walk(value: Any, path: list[str]) -> None:
+        if isinstance(value, list):
+            for index, item in enumerate(value):
+                walk(item, [*path, str(index)])
+            return
+        if not isinstance(value, dict):
+            return
+        if _looks_like_correlation_entry(value):
+            row = _correlation_row_from_entry(value, path)
+            if row is not None:
+                rows.append(row)
+            return
+        for key, item in value.items():
+            if key in {"marker", "decision", "top_correlations"}:
+                continue
+            walk(item, [*path, str(key)])
+
+    walk(payload, [])
+    rows.sort(key=lambda row: (float(row["score"]), int(row["pair_count"] or 0) if isinstance(row.get("pair_count"), int) else 0, row["feature"], row["target"]), reverse=True)
+    if limit is not None:
+        return rows[: int(limit)]
+    return rows
+
+
 def summarize_features(records: list[dict[str, Any]]) -> dict[str, Any]:
     grouped: dict[str, list[dict[str, Any]]] = {}
     for row in records:
@@ -711,45 +795,42 @@ def summarize_features(records: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def decide_next_step(correlations: dict[str, Any]) -> dict[str, Any]:
-    residual_features = {
-        "highpass_energy_delta_abs",
-        "srm_energy_delta_abs",
-        "srm_mean_delta_abs",
-        "srm_std_delta_abs",
-        "laplacian_variance_delta_abs",
-        "sobel_edge_energy_delta_abs",
-        "blockiness_delta_abs",
-        "dct_total_energy_delta_abs",
-        "dct_low_energy_delta_abs",
-        "dct_high_energy_delta_abs",
-        "dct_high_low_ratio_delta_abs",
-        "histogram_l1",
-    }
-    geometry_features = {"aspect_ratio_delta_abs", "area_ratio_delta_abs", "crop_scale_proxy"}
-    local_features = {"ignore_mask_area", "tamper_area", "tamper_occluded_by_ignore"}
-
-    def group_score(features: set[str]) -> float:
-        score = 0.0
-        overall = correlations.get("overall") or {}
-        for feature in features:
-            for entry in (overall.get(feature) or {}).values():
-                score = max(score, float(entry.get("abs_pearson_r") or 0.0), float(entry.get("abs_spearman_r") or 0.0))
-        return score
-
+    top = flatten_correlation_schema(correlations, limit=25)
     scores = {
-        "residual_dct_srm": group_score(residual_features),
-        "geometry": group_score(geometry_features),
-        "local_mask_or_occlusion": group_score(local_features),
+        "residual_dct": 0.0,
+        "geometry": 0.0,
+        "local_nuisance": 0.0,
+        "color_histogram": 0.0,
+        "other": 0.0,
     }
-    if scores["residual_dct_srm"] >= 0.35 and scores["residual_dct_srm"] >= scores["geometry"]:
-        recommendation = "train_0071_lightweight_residual_dct_branch"
-    elif scores["geometry"] >= 0.35 and scores["geometry"] > scores["residual_dct_srm"]:
-        recommendation = "refine_geometry_normalized_preprocessing"
-    elif max(scores.values()) <= 0.20:
-        recommendation = "revisit_model_calibration_or_class_head_robustness"
+    for row in top:
+        group = str(row.get("feature_group") or "other")
+        scores[group] = max(float(scores.get(group, 0.0)), float(row.get("score") or 0.0))
+    if not top:
+        decision = "correlation_parser_failed_or_empty"
+    elif scores["residual_dct"] >= 0.35 and scores["residual_dct"] >= scores["geometry"] and scores["residual_dct"] >= scores["local_nuisance"]:
+        decision = "residual_dct_signal_dominant"
+    elif scores["geometry"] >= 0.35 and scores["residual_dct"] >= 0.25:
+        decision = "mixed_low_level_and_geometry_signal"
+    elif scores["geometry"] >= 0.35:
+        decision = "geometry_still_dominant_or_mixed"
+    elif max(scores.values()) < 0.20:
+        decision = "weak_low_level_signal"
     else:
-        recommendation = "collect_more_diagnostic_records_before_training"
-    return {"scores": scores, "recommendation": recommendation}
+        decision = "mixed_low_level_and_geometry_signal"
+    recommendations = {
+        "residual_dct_signal_dominant": "train_0071_lightweight_residual_dct_branch",
+        "geometry_still_dominant_or_mixed": "refine_geometry_normalized_preprocessing",
+        "mixed_low_level_and_geometry_signal": "compare_residual_branch_against_geometry_preprocessing",
+        "weak_low_level_signal": "revisit_model_calibration_or_class_head_robustness",
+        "correlation_parser_failed_or_empty": "fix_correlation_reporting_or_collect_more_records",
+    }
+    return {
+        "decision": decision,
+        "scores": scores,
+        "top_correlations": top[:10],
+        "recommendation": recommendations[decision],
+    }
 
 
 def _output_plan(output_root: Path) -> dict[str, str]:
@@ -787,11 +868,25 @@ def _render_report(summary: dict[str, Any], feature_summary: dict[str, Any], dec
         "",
         f"- Records: `{summary['record_count']}`",
         f"- Pair root: `{summary['pair_root']}`",
+        f"- Decision: `{decision.get('decision')}`",
         f"- Recommendation: `{decision['recommendation']}`",
+        "",
+        "## Top Correlations",
+        "",
+        "| Feature | Target | Score | Pearson r | Spearman r | Pairs | Group | Path |",
+        "| --- | --- | ---: | ---: | ---: | ---: | --- | --- |",
+    ]
+    for row in decision.get("top_correlations") or []:
+        lines.append(
+            f"| {row.get('feature')} | {row.get('target')} | {row.get('score')} | {row.get('pearson_r')} | {row.get('spearman_r')} | {row.get('pair_count')} | {row.get('feature_group')} | {row.get('path')} |"
+        )
+    lines.extend([
+        "",
+        "## Profile Families",
         "",
         "| Profile Family | Pairs | Mean delta p_tampered | Mean delta valid IoU | Activation flip-off rate | Pred flip rate |",
         "| --- | ---: | ---: | ---: | ---: | ---: |",
-    ]
+    ])
     for family, metrics in sorted((feature_summary.get("profile_families") or {}).items()):
         lines.append(
             f"| {family} | {metrics.get('pair_count')} | {metrics.get('mean_delta_p_tampered')} | {metrics.get('mean_delta_valid_iou')} | {metrics.get('activation_flip_off_rate')} | {metrics.get('pred_flip_rate')} |"
@@ -829,7 +924,7 @@ def run_snsaug_v2_residual_degradation_analysis(config: dict[str, Any], *, dry_r
     paths = _output_plan(output_root)
     _write_jsonl(Path(paths["residual_degradation_records"]), records)
     _write_json(Path(paths["residual_feature_summary"]), feature_summary)
-    _write_json(Path(paths["residual_feature_response_correlation"]), {**correlations, "decision": decision})
+    _write_json(Path(paths["residual_feature_response_correlation"]), {**correlations, "decision": decision, "top_correlations": decision["top_correlations"]})
     _write_text(Path(paths["residual_degradation_report"]), _render_report(summary, feature_summary, decision))
     artifact = {
         "marker": MARKER,

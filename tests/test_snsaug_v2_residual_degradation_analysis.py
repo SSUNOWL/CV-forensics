@@ -24,8 +24,11 @@ from cv_forensics.snsaug_v2_residual_degradation_analysis import (  # noqa: E402
     blockiness_score,
     build_residual_degradation_records,
     correlation_report,
+    decide_next_step,
     dct_energy_summary,
     extract_residual_features,
+    feature_group,
+    flatten_correlation_schema,
     highpass_residual_energy,
     join_clean_sns_pairs,
     load_response_records,
@@ -229,6 +232,71 @@ def test_correlation_handles_constant_values() -> None:
     assert_true(table["overall"]["highpass_energy_delta_abs"]["delta_p_tampered"]["pearson_r"] is None, "constant table correlation is None")
 
 
+def test_nested_correlation_schema_flattening_and_decision() -> None:
+    nested = {
+        "overall": {
+            "dct_high_low_ratio_delta_abs": {
+                "activation_flip_off": {
+                    "pearson_r": -0.72,
+                    "abs_pearson_r": 0.72,
+                    "spearman_r": -0.68,
+                    "abs_spearman_r": 0.68,
+                    "pair_count": 120,
+                }
+            }
+        },
+        "by_profile_family": {
+            "geometry": {
+                "crop_scale_proxy": {
+                    "delta_valid_iou": {
+                        "pearson_r": 0.55,
+                        "abs_pearson_r": 0.55,
+                        "spearman_r": 0.50,
+                        "abs_spearman_r": 0.50,
+                        "pair_count": 60,
+                    }
+                }
+            }
+        },
+    }
+    rows = flatten_correlation_schema(nested)
+    assert_true(rows, "nested schema produces rows")
+    top = rows[0]
+    assert_equal(top["feature"], "dct_high_low_ratio_delta_abs", "nested feature inferred")
+    assert_equal(top["target"], "activation_flip_off", "nested target inferred")
+    assert_equal(top["feature_group"], "residual_dct", "nested feature group")
+    decision = decide_next_step(nested)
+    assert_true(decision["decision"] != "correlation_parser_failed_or_empty", "valid nested correlations avoid parser failure")
+    assert_true(decision["top_correlations"], "decision top correlations not empty")
+
+
+def test_flat_correlation_schema_flattening() -> None:
+    flat = [
+        {
+            "feature": "crop_scale_proxy",
+            "target": "delta_valid_iou",
+            "pearson_r": -0.66,
+            "abs_pearson_r": 0.66,
+            "spearman_r": -0.61,
+            "abs_spearman_r": 0.61,
+            "pair_count": 20,
+        }
+    ]
+    rows = flatten_correlation_schema(flat)
+    assert_equal(len(rows), 1, "flat schema row count")
+    assert_equal(rows[0]["feature"], "crop_scale_proxy", "flat feature preserved")
+    assert_equal(rows[0]["feature_group"], "geometry", "flat feature group")
+
+
+def test_feature_group_classification() -> None:
+    assert_equal(feature_group("srm_energy_delta_abs"), "residual_dct", "srm group")
+    assert_equal(feature_group("blockiness_delta_abs"), "residual_dct", "blockiness group")
+    assert_equal(feature_group("aspect_ratio_delta_abs"), "geometry", "geometry group")
+    assert_equal(feature_group("ignore_mask_area"), "local_nuisance", "local nuisance group")
+    assert_equal(feature_group("histogram_l1"), "color_histogram", "histogram group")
+    assert_equal(feature_group("unknown_feature"), "other", "other group")
+
+
 def test_config_validator_rejects_training_flags() -> None:
     root = temp_root("cvf_0070_flags_")
     pair_root, meta_path, records_path = write_fixture(root)
@@ -258,9 +326,13 @@ def test_dry_run_and_tiny_run_write_artifacts() -> None:
         assert_true(path.exists(), f"{key} exists")
         assert_true(not str(path).startswith(str(REPO_ROOT)), f"{key} outside repo")
     artifact = json.loads(Path(summary["output_paths"]["artifact_manifest"]).read_text(encoding="utf-8"))
+    correlation = json.loads(Path(summary["output_paths"]["residual_feature_response_correlation"]).read_text(encoding="utf-8"))
+    report = Path(summary["output_paths"]["residual_degradation_report"]).read_text(encoding="utf-8")
     assert_equal(artifact["marker"], MARKER, "artifact marker")
     assert_equal(artifact["record_count"], summary["record_count"], "artifact record count")
     assert_true(artifact["no_training"] is True and artifact["no_download"] is True, "artifact guardrails")
+    assert_true("top_correlations" in correlation, "top correlations written")
+    assert_true("Top Correlations" in report, "report has top correlations table")
 
 
 def test_docs_marker_present() -> None:
@@ -274,6 +346,9 @@ def main() -> int:
         test_residual_feature_extractors_are_finite,
         test_clean_sns_pair_join_and_response_deltas,
         test_correlation_handles_constant_values,
+        test_nested_correlation_schema_flattening_and_decision,
+        test_flat_correlation_schema_flattening,
+        test_feature_group_classification,
         test_config_validator_rejects_training_flags,
         test_dry_run_and_tiny_run_write_artifacts,
         test_docs_marker_present,
