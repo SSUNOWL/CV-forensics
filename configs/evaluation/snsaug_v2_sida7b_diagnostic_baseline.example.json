@@ -1,0 +1,25 @@
+{
+  "schema_version": "1.0",
+  "config_kind": "approved_snsaug_v2_sida7b_diagnostic_baseline",
+  "execution_mode": "approved_local_snsaug_v2_sida7b_diagnostic_baseline",
+  "user_approval_text": "I_APPROVE_SNSAUG_V2_SIDA7B_DIAGNOSTIC_BASELINE",
+  "mode": "export_sida_eval_subset_mode",
+  "pair_root": "/home/rlatjswo/cvf_eval_outputs/snsaug_v2_0058c_fixed_pairs_YYYYMMDD_HHMMSS",
+  "meta_jsonl_path": "/home/rlatjswo/cvf_eval_outputs/snsaug_v2_0058c_fixed_pairs_YYYYMMDD_HHMMSS/meta.jsonl",
+  "cached_sida_outputs_path": null,
+  "final_policy_gate_records_path": "/home/rlatjswo/cvf_eval_outputs/snsaug_v2_0072_deployable_policy_gate_report_YYYYMMDD_HHMMSS/final_policy_gate_records.jsonl",
+  "final_policy_gate_metrics_path": "/home/rlatjswo/cvf_eval_outputs/snsaug_v2_0072_deployable_policy_gate_report_YYYYMMDD_HHMMSS/final_policy_gate_metrics.json",
+  "approved_input_roots": [
+    "/home/rlatjswo/cvf_eval_outputs/snsaug_v2_0058c_fixed_pairs_YYYYMMDD_HHMMSS",
+    "/home/rlatjswo/cvf_eval_outputs/snsaug_v2_0072_deployable_policy_gate_report_YYYYMMDD_HHMMSS"
+  ],
+  "approved_output_roots": [
+    "/home/rlatjswo/cvf_eval_outputs"
+  ],
+  "output_root": "/home/rlatjswo/cvf_eval_outputs/snsaug_v2_0074_sida7b_diagnostic_baseline_YYYYMMDD_HHMMSS",
+  "max_per_label_profile": 2,
+  "no_training": true,
+  "no_finetune": true,
+  "no_network": true,
+  "no_download": true
+}
