@@ -23,10 +23,12 @@ from cv_forensics.snsaug_v2_sida7b_diagnostic_baseline import (  # noqa: E402
     build_balanced_subset,
     compare_sida_to_mixed_gate,
     export_subset_rows,
+    load_mixed_gate_metrics,
     mask_valid_iou,
     normalize_class,
     parse_cached_sida_outputs,
     parse_sida_text_output,
+    parse_sida_text_output_detail,
     run_snsaug_v2_sida7b_diagnostic_baseline,
     validate_snsaug_v2_sida7b_diagnostic_baseline_config,
     load_snsaug_v2_sida7b_diagnostic_baseline_config,
@@ -150,9 +152,16 @@ def test_class_parser_and_cached_missing_masks() -> None:
     cached = [{"image_id": "a", "sida_text_output": "[CLS] tampered\n[SEG] unavailable"}]
     records = parse_cached_sida_outputs(cached, manifest)
     assert_equal(parse_sida_text_output("[CLS] synthetic [SEG] none"), "synthetic", "text parser")
+    assert_equal(parse_sida_text_output("[CLS] This image is classified as fully synthetic."), "synthetic", "fully synthetic parser")
+    assert_equal(parse_sida_text_output("[CLS] This is an ai-generated image, not tampered."), "synthetic", "ai-generated parser")
+    assert_equal(parse_sida_text_output("[CLS] manipulated image [SEG] mask"), "tampered", "manipulated parser")
+    assert_equal(parse_sida_text_output_detail("[CLS] real but tampered")["pred_class"], "unknown", "ambiguous parser")
     assert_equal(normalize_class("authentic image"), "real", "class normalizer")
     assert_true(records[0]["mask_missing"] is True, "missing mask marked")
     assert_true(records[0]["valid_iou"] is None, "missing mask iou none")
+    assert_true(records[0]["mask_extraction_failed"] is True, "seg without mask is extraction failure")
+    no_seg = parse_cached_sida_outputs([{"image_id": "a", "sida_text_output": "[CLS] real"}], manifest)
+    assert_true(no_seg[0]["mask_not_requested_or_not_generated"] is True, "no seg marked not requested/generated")
 
 
 def test_mask_iou_and_mixed_gate_comparison_missing_profiles() -> None:
@@ -164,6 +173,33 @@ def test_mask_iou_and_mixed_gate_comparison_missing_profiles() -> None:
     assert_equal(mask_valid_iou(str(pred), str(gt)), 1.0, "perfect iou")
     comparison = compare_sida_to_mixed_gate({"zoom_crop": {"tampered_recall": 0.5}}, {})
     assert_true("zoom_crop" in comparison["missing_mixed_gate_profiles"], "missing mixed profile tracked")
+
+
+def test_mixed_gate_metrics_load_selected_schema_by_profile() -> None:
+    root = temp_root("cvf_0074_gate_")
+    metrics = root / "final_policy_gate_metrics.json"
+    metrics.write_text(
+        json.dumps(
+            {
+                "comparison_against_fixed_original": {
+                    "zoom_crop": {
+                        "selected": {
+                            "tampered_recall": 0.7,
+                            "synthetic_recall": 0.9,
+                            "real_fpr": 0.2,
+                            "tampered_valid_mean_iou": 0.4,
+                        }
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    loaded = load_mixed_gate_metrics(str(metrics))
+    assert_equal(loaded["zoom_crop"]["tampered_recall"], 0.7, "selected mixed gate profile loaded")
+    comparison = compare_sida_to_mixed_gate({"zoom_crop": {"tampered_recall": 0.5, "synthetic_recall": 0.1, "real_fpr": 0.3, "tampered_valid_mean_iou": 0.2}}, loaded)
+    assert_equal(comparison["missing_mixed_gate_profiles"], [], "mixed gate profile available")
+    assert_equal(comparison["profiles"]["zoom_crop"]["delta_sida_minus_mixed_gate"]["synthetic_recall"], -0.8, "synthetic delta")
 
 
 def test_export_only_run_writes_artifact_and_forbids_conclusion() -> None:
@@ -196,6 +232,8 @@ def test_cached_run_writes_records() -> None:
     summary = run_snsaug_v2_sida7b_diagnostic_baseline(config)
     records = [json.loads(line) for line in Path(summary["output_paths"]["sida7b_diagnostic_records"]).read_text(encoding="utf-8").splitlines()]
     assert_equal(len(records), 2, "cached records written")
+    corrected = Path(summary["output_paths"]["sida7b_corrected_diagnostic_report"]).read_text(encoding="utf-8")
+    assert_true("does not claim localization failure" in corrected, "corrected report avoids localization failure claim")
 
 
 def test_docs_marker_present() -> None:
@@ -209,6 +247,7 @@ def main() -> int:
         test_export_manifest_balanced_and_prompt_contains_tags,
         test_class_parser_and_cached_missing_masks,
         test_mask_iou_and_mixed_gate_comparison_missing_profiles,
+        test_mixed_gate_metrics_load_selected_schema_by_profile,
         test_export_only_run_writes_artifact_and_forbids_conclusion,
         test_cached_run_writes_records,
         test_docs_marker_present,

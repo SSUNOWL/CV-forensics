@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from pathlib import Path
 from typing import Any
 
@@ -221,28 +222,89 @@ def normalize_class(value: Any) -> str | None:
     text = str(value or "").strip().lower()
     if not text:
         return None
-    if "tamper" in text or "manipulated" in text or "edited" in text:
+    if "tamper" in text or "manipulated" in text or "manipulation" in text or "altered" in text or "edited" in text:
         return "tampered"
-    if "synthetic" in text or "fake" in text or "ai-generated" in text or "generated" in text:
+    if "synthetic" in text or "fully synthetic" in text or "full synthetic" in text or "fake" in text or "ai-generated" in text or "ai generated" in text or "generated" in text:
         return "synthetic"
     if "real" in text or "authentic" in text or "natural" in text:
         return "real"
     return None
 
 
-def parse_sida_text_output(text: Any) -> str | None:
-    raw = str(text or "")
-    lowered = raw.lower()
+def raw_output_audit(rows: list[dict[str, Any]]) -> dict[str, int]:
+    counters = {
+        "raw_contains_cls_count": 0,
+        "raw_contains_seg_count": 0,
+        "raw_contains_real_count": 0,
+        "raw_contains_synthetic_count": 0,
+        "raw_contains_fully_synthetic_count": 0,
+        "raw_contains_generated_count": 0,
+        "raw_contains_tampered_count": 0,
+        "raw_contains_manipulated_count": 0,
+    }
+    for row in rows:
+        raw = str(row.get("sida_text_output") or "").lower()
+        counters["raw_contains_cls_count"] += int("[cls]" in raw)
+        counters["raw_contains_seg_count"] += int("[seg]" in raw)
+        counters["raw_contains_real_count"] += int(bool(re.search(r"\breal\b|\bauthentic\b|\bnatural\b", raw)))
+        counters["raw_contains_synthetic_count"] += int("synthetic" in raw)
+        counters["raw_contains_fully_synthetic_count"] += int("fully synthetic" in raw or "full synthetic" in raw)
+        counters["raw_contains_generated_count"] += int("generated" in raw)
+        counters["raw_contains_tampered_count"] += int("tamper" in raw or "altered" in raw)
+        counters["raw_contains_manipulated_count"] += int("manipulated" in raw or "manipulation" in raw)
+    return counters
+
+
+def _class_hits(text: str) -> set[str]:
+    lowered = text.lower()
+    tamper_probe = re.sub(r"\b(?:not|no|without)\s+(?:signs?\s+of\s+)?(?:tamper(?:ed|ing)?|manipulat(?:ed|ion)|alter(?:ed|ation)|edit(?:ed|ing)?)\b", " ", lowered)
+    hits: set[str] = set()
+    if re.search(r"\btamper(?:ed|ing)?\b|\bmanipulat(?:ed|ion)\b|\baltered\b|\bedited\b", tamper_probe):
+        hits.add("tampered")
+    if re.search(r"\bfull(?:y)? synthetic\b|\bsynthetic\b|\bfake\b|\bai[- ]generated\b|\bgenerated\b", lowered):
+        hits.add("synthetic")
+    if re.search(r"\breal\b|\bauthentic\b|\bnatural\b", lowered):
+        hits.add("real")
+    return hits
+
+
+def _explicit_cls_span(text: str) -> str | None:
+    lowered = text.lower()
     marker = "[cls]"
-    if marker in lowered:
-        after = lowered.split(marker, 1)[1]
-        for stop in ("[seg]", "\n", ";", "."):
-            if stop in after:
-                after = after.split(stop, 1)[0]
-        parsed = normalize_class(after)
-        if parsed:
-            return parsed
-    return normalize_class(raw)
+    if marker not in lowered:
+        return None
+    after = text[lowered.index(marker) + len(marker):]
+    lowered_after = after.lower()
+    for stop in ("[seg]", "\n", ";", "."):
+        if stop in lowered_after:
+            after = after[: lowered_after.index(stop)]
+            break
+    return after
+
+
+def parse_sida_text_output_detail(text: Any) -> dict[str, Any]:
+    raw = str(text or "")
+    explicit = _explicit_cls_span(raw)
+    spans = [explicit] if explicit is not None else []
+    spans.append(raw)
+    for index, span in enumerate(spans):
+        hits = _class_hits(str(span or ""))
+        if "tampered" in hits:
+            if "synthetic" in hits or "real" in hits:
+                return {"pred_class": "unknown", "parse_error": True, "parse_warning": "ambiguous_class_terms", "class_hits": sorted(hits), "used_explicit_cls": explicit is not None and index == 0}
+            return {"pred_class": "tampered", "parse_error": False, "parse_warning": None, "class_hits": sorted(hits), "used_explicit_cls": explicit is not None and index == 0}
+        if hits == {"synthetic"}:
+            return {"pred_class": "synthetic", "parse_error": False, "parse_warning": None, "class_hits": sorted(hits), "used_explicit_cls": explicit is not None and index == 0}
+        if hits == {"real"}:
+            return {"pred_class": "real", "parse_error": False, "parse_warning": None, "class_hits": sorted(hits), "used_explicit_cls": explicit is not None and index == 0}
+        if len(hits) > 1:
+            return {"pred_class": "unknown", "parse_error": True, "parse_warning": "ambiguous_class_terms", "class_hits": sorted(hits), "used_explicit_cls": explicit is not None and index == 0}
+    return {"pred_class": "unknown", "parse_error": True, "parse_warning": "no_class_terms", "class_hits": [], "used_explicit_cls": explicit is not None}
+
+
+def parse_sida_text_output(text: Any) -> str | None:
+    parsed = parse_sida_text_output_detail(text).get("pred_class")
+    return parsed if parsed in CLASS_LABELS else None
 
 
 def _image_id(row: dict[str, Any]) -> str:
@@ -343,11 +405,16 @@ def parse_cached_sida_outputs(cached_rows: list[dict[str, Any]], manifest_rows: 
     out: list[dict[str, Any]] = []
     for row in cached_rows:
         manifest = manifest_by_id.get(str(row.get("image_id") or "")) or manifest_by_key.get(_response_key(row)) or {}
-        pred = normalize_class(row.get("sida_pred_class")) or parse_sida_text_output(row.get("sida_text_output"))
+        parsed_detail = parse_sida_text_output_detail(row.get("sida_text_output"))
+        pred = parsed_detail["pred_class"] if parsed_detail["pred_class"] in CLASS_LABELS else normalize_class(row.get("sida_pred_class"))
+        if pred not in CLASS_LABELS:
+            pred = None
         label = normalize_class(row.get("content_label")) or normalize_class(manifest.get("content_label"))
         mask_path = row.get("sida_mask_path")
+        raw_contains_seg = "[seg]" in str(row.get("sida_text_output") or "").lower()
         mask_missing = bool(row.get("mask_missing")) or (label == "tampered" and not mask_path)
         valid_iou = mask_valid_iou(str(mask_path), manifest.get("tamper_mask_path"), manifest.get("ignore_mask_path")) if mask_path else None
+        parse_error = bool(row.get("parse_error")) or bool(parsed_detail.get("parse_error")) or pred is None
         out.append(
             {
                 "marker": MARKER,
@@ -365,7 +432,12 @@ def parse_cached_sida_outputs(cached_rows: list[dict[str, Any]], manifest_rows: 
                 "sida_mask_path": mask_path,
                 "valid_iou": valid_iou,
                 "mask_missing": mask_missing,
-                "parse_error": bool(row.get("parse_error")) or pred is None,
+                "raw_contains_seg": raw_contains_seg,
+                "mask_extraction_failed": bool(raw_contains_seg and not mask_path),
+                "mask_not_requested_or_not_generated": bool(not raw_contains_seg),
+                "parse_error": parse_error,
+                "parse_warning": parsed_detail.get("parse_warning"),
+                "class_parse_hits": parsed_detail.get("class_hits", []),
                 "class_correct": pred == label if pred and label else False,
             }
         )
@@ -424,6 +496,9 @@ def compute_metrics(records: list[dict[str, Any]]) -> dict[str, Any]:
         "tampered_recall": _recall(matrix, "tampered") if tampered else None,
         "tampered_valid_mean_iou": _mean([row.get("valid_iou") for row in tampered]),
         "mask_missing_rate": (sum(1 for row in tampered if row.get("mask_missing")) / len(tampered)) if tampered else None,
+        "raw_seg_rate": (sum(1 for row in records if row.get("raw_contains_seg")) / total) if total else None,
+        "mask_extraction_failed_rate": (sum(1 for row in records if row.get("mask_extraction_failed")) / total) if total else None,
+        "mask_not_requested_or_not_generated_rate": (sum(1 for row in records if row.get("mask_not_requested_or_not_generated")) / total) if total else None,
         "parse_error_rate": (sum(1 for row in records if row.get("parse_error")) / total) if total else None,
     }
 
@@ -462,7 +537,33 @@ def load_mixed_gate_metrics(path: str | None) -> dict[str, Any]:
         return {}
     payload = _load_json(path)
     per_profile = payload.get("per_profile") if isinstance(payload.get("per_profile"), dict) else {}
-    return per_profile
+    if per_profile:
+        return per_profile
+    profiles = payload.get("profiles") if isinstance(payload.get("profiles"), dict) else {}
+    if profiles:
+        return profiles
+    comparison = payload.get("comparison_against_fixed_original") if isinstance(payload.get("comparison_against_fixed_original"), dict) else {}
+    out: dict[str, Any] = {}
+    for profile, item in comparison.items():
+        if not isinstance(item, dict):
+            continue
+        selected = item.get("selected")
+        if isinstance(selected, dict):
+            out[str(profile)] = selected
+    return out
+
+
+def _metric_delta(left: Any, right: Any) -> float | None:
+    if isinstance(left, (int, float)) and isinstance(right, (int, float)):
+        return float(left) - float(right)
+    return None
+
+
+def _metric_value(row: dict[str, Any], *names: str) -> Any:
+    for name in names:
+        if name in row:
+            return row.get(name)
+    return None
 
 
 def compare_sida_to_mixed_gate(sida_metrics: dict[str, Any], mixed_gate_metrics: dict[str, Any]) -> dict[str, Any]:
@@ -471,13 +572,31 @@ def compare_sida_to_mixed_gate(sida_metrics: dict[str, Any], mixed_gate_metrics:
     for profile in profiles:
         sida = sida_metrics.get(profile, {}) if isinstance(sida_metrics.get(profile), dict) else {}
         gate = mixed_gate_metrics.get(profile, {}) if isinstance(mixed_gate_metrics.get(profile), dict) else {}
+        sida_tampered_recall = _metric_value(sida, "tampered_recall")
+        sida_synthetic_recall = _metric_value(sida, "synthetic_recall")
+        sida_real_fpr = _metric_value(sida, "real_fpr")
+        sida_valid_iou = _metric_value(sida, "tampered_valid_mean_iou", "valid_iou")
+        gate_tampered_recall = _metric_value(gate, "tampered_recall")
+        gate_synthetic_recall = _metric_value(gate, "synthetic_recall")
+        gate_real_fpr = _metric_value(gate, "real_fpr")
+        gate_valid_iou = _metric_value(gate, "tampered_valid_mean_iou", "valid_iou")
         out[profile] = {
-            "sida_tampered_recall": sida.get("tampered_recall"),
-            "mixed_gate_tampered_recall": gate.get("tampered_recall"),
-            "tampered_recall_delta_sida_minus_gate": None if sida.get("tampered_recall") is None or gate.get("tampered_recall") is None else sida["tampered_recall"] - gate["tampered_recall"],
-            "sida_valid_iou": sida.get("tampered_valid_mean_iou"),
-            "mixed_gate_valid_iou": gate.get("tampered_valid_mean_iou"),
-            "valid_iou_delta_sida_minus_gate": None if sida.get("tampered_valid_mean_iou") is None or gate.get("tampered_valid_mean_iou") is None else sida["tampered_valid_mean_iou"] - gate["tampered_valid_mean_iou"],
+            "sida_tampered_recall": sida_tampered_recall,
+            "sida_synthetic_recall": sida_synthetic_recall,
+            "sida_real_fpr": sida_real_fpr,
+            "sida_valid_iou": sida_valid_iou,
+            "mixed_gate_tampered_recall": gate_tampered_recall,
+            "mixed_gate_synthetic_recall": gate_synthetic_recall,
+            "mixed_gate_real_fpr": gate_real_fpr,
+            "mixed_gate_valid_iou": gate_valid_iou,
+            "delta_sida_minus_mixed_gate": {
+                "tampered_recall": _metric_delta(sida_tampered_recall, gate_tampered_recall),
+                "synthetic_recall": _metric_delta(sida_synthetic_recall, gate_synthetic_recall),
+                "real_fpr": _metric_delta(sida_real_fpr, gate_real_fpr),
+                "valid_iou": _metric_delta(sida_valid_iou, gate_valid_iou),
+            },
+            "tampered_recall_delta_sida_minus_gate": _metric_delta(sida_tampered_recall, gate_tampered_recall),
+            "valid_iou_delta_sida_minus_gate": _metric_delta(sida_valid_iou, gate_valid_iou),
         }
     return {"marker": MARKER, "profiles": out, "missing_mixed_gate_profiles": [p for p in sida_metrics if p not in mixed_gate_metrics]}
 
@@ -496,6 +615,28 @@ def decide_sida(type_metrics: dict[str, Any], cached_available: bool) -> str:
     return "sida_fails_both_types"
 
 
+def decide_sida_findings(type_metrics: dict[str, Any], comparison: dict[str, Any], cached_available: bool) -> list[str]:
+    if not cached_available:
+        return ["sida_cached_outputs_missing"]
+    findings: list[str] = []
+    all_groups = [item for item in type_metrics.values() if isinstance(item, dict) and item.get("row_count")]
+    if all_groups and all((item.get("synthetic_recall") or 0.0) == 0.0 for item in all_groups):
+        findings.append("sida_classification_collapse_synthetic")
+    type_a = type_metrics.get("type_a_local_overlay", {})
+    type_b = type_metrics.get("type_b_global_geometry_degradation", {})
+    a_t = type_a.get("tampered_recall")
+    b_t = type_b.get("tampered_recall")
+    if isinstance(a_t, (int, float)) and isinstance(b_t, (int, float)) and a_t < b_t:
+        findings.append("sida_local_overlay_worse_than_global")
+    if isinstance(b_t, (int, float)) and b_t < 0.5:
+        findings.append("sida_global_degradation_partially_failed")
+    if any((item.get("mask_missing_rate") or 0.0) >= 1.0 for item in all_groups):
+        findings.append("sida_localization_unavailable_mask_missing")
+    missing = comparison.get("missing_mixed_gate_profiles", []) if isinstance(comparison, dict) else []
+    findings.append("sida_vs_mixed_gate_incomplete" if missing else "sida_vs_mixed_gate_available")
+    return findings or ["sida_handles_both_types"]
+
+
 def _paths(output_root: Path) -> dict[str, str]:
     return {
         "sida_eval_subset_manifest": str(output_root / "sida_eval_subset_manifest.jsonl"),
@@ -507,6 +648,10 @@ def _paths(output_root: Path) -> dict[str, str]:
         "sida7b_type_a_type_b_summary": str(output_root / "sida7b_type_a_type_b_summary.json"),
         "sida7b_vs_mixed_gate_comparison": str(output_root / "sida7b_vs_mixed_gate_comparison.json"),
         "sida7b_diagnostic_report": str(output_root / "sida7b_diagnostic_report.md"),
+        "sida7b_raw_output_audit": str(output_root / "sida7b_raw_output_audit.json"),
+        "sida7b_corrected_type_a_type_b_summary": str(output_root / "sida7b_corrected_type_a_type_b_summary.json"),
+        "sida7b_corrected_vs_mixed_gate_comparison": str(output_root / "sida7b_corrected_vs_mixed_gate_comparison.json"),
+        "sida7b_corrected_diagnostic_report": str(output_root / "sida7b_corrected_diagnostic_report.md"),
         "artifact_manifest": str(output_root / "artifact_manifest.json"),
     }
 
@@ -558,6 +703,43 @@ def _report(decision: str, mode: str, manifest_count: int, records_count: int, t
     return "\n".join(lines) + "\n"
 
 
+def _corrected_report(findings: list[str], mode: str, manifest_count: int, records_count: int, type_metrics: dict[str, Any], raw_audit: dict[str, Any], comparison: dict[str, Any]) -> str:
+    lines = [
+        "# Corrected SIDA-7B SNSAug Diagnostic Report",
+        "",
+        MARKER,
+        "",
+        f"- Mode: `{mode}`",
+        f"- Exported subset rows: `{manifest_count}`",
+        f"- Cached SIDA records evaluated: `{records_count}`",
+        f"- Findings: `{', '.join(findings) if findings else 'none'}`",
+        f"- Raw [CLS] count: `{raw_audit.get('raw_contains_cls_count', 0)}`",
+        f"- Raw [SEG] count: `{raw_audit.get('raw_contains_seg_count', 0)}`",
+        "",
+    ]
+    if not records_count:
+        lines.append("SIDA was not run yet. This is an export-only result; no performance conclusion is allowed.")
+        return "\n".join(lines) + "\n"
+    lines.append("Cached SIDA outputs were evaluated as a classification diagnostic.")
+    if "sida_localization_unavailable_mask_missing" in findings:
+        lines.append("Localization is unavailable for this cached run because masks are missing; this report does not claim localization failure.")
+    lines += [
+        "",
+        "| Failure Type | Accuracy | Synthetic Recall | Tampered Recall | Valid IoU | Mask Missing Rate | Raw SEG Rate |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+    ]
+    for key in ("type_a_local_overlay", "type_b_global_geometry_degradation", "clean"):
+        item = type_metrics.get(key, {})
+        lines.append(f"| {key} | {item.get('accuracy')} | {item.get('synthetic_recall')} | {item.get('tampered_recall')} | {item.get('tampered_valid_mean_iou')} | {item.get('mask_missing_rate')} | {item.get('raw_seg_rate')} |")
+    missing = comparison.get("missing_mixed_gate_profiles", []) if isinstance(comparison, dict) else []
+    lines += [
+        "",
+        f"- Mixed-gate comparison status: `{'incomplete' if missing else 'available'}`",
+        f"- Missing mixed-gate profiles: `{missing}`",
+    ]
+    return "\n".join(lines) + "\n"
+
+
 def run_snsaug_v2_sida7b_diagnostic_baseline(config: dict[str, Any], dry_run: bool = False) -> dict[str, Any]:
     assert_valid_config(config, require_exists=not dry_run)
     output_root = _real(config["output_root"])
@@ -587,18 +769,26 @@ def run_snsaug_v2_sida7b_diagnostic_baseline(config: dict[str, Any], dry_run: bo
     records: list[dict[str, Any]] = []
     per_profile: dict[str, Any] = {}
     type_metrics: dict[str, Any] = {}
+    raw_audit: dict[str, Any] = raw_output_audit([])
     comparison: dict[str, Any] = {"marker": MARKER, "profiles": {}, "missing_mixed_gate_profiles": []}
     if cached_available:
-        records = parse_cached_sida_outputs(_load_jsonl(config["cached_sida_outputs_path"]), manifest)
+        cached_rows = _load_jsonl(config["cached_sida_outputs_path"])
+        raw_audit = raw_output_audit(cached_rows)
+        records = parse_cached_sida_outputs(cached_rows, manifest)
         per_profile = per_profile_metrics(records)
         type_metrics = type_summary(records)
         comparison = compare_sida_to_mixed_gate(per_profile, load_mixed_gate_metrics(config.get("final_policy_gate_metrics_path")))
     decision = decide_sida(type_metrics, cached_available)
+    decision_findings = decide_sida_findings(type_metrics, comparison, cached_available)
     _write_jsonl(Path(paths["sida7b_diagnostic_records"]), records)
     _write_json(Path(paths["sida7b_per_profile_metrics"]), {"marker": MARKER, "metrics": per_profile, "clean_to_sns_drops": clean_to_sns_drops(per_profile)})
     _write_json(Path(paths["sida7b_type_a_type_b_summary"]), {"marker": MARKER, "summary": type_metrics, "decision": decision})
     _write_json(Path(paths["sida7b_vs_mixed_gate_comparison"]), comparison)
     _write_text(Path(paths["sida7b_diagnostic_report"]), _report(decision, str(config.get("mode")), len(manifest), len(records), type_metrics))
+    _write_json(Path(paths["sida7b_raw_output_audit"]), {"marker": MARKER, **raw_audit})
+    _write_json(Path(paths["sida7b_corrected_type_a_type_b_summary"]), {"marker": MARKER, "summary": type_metrics, "decision_findings": decision_findings})
+    _write_json(Path(paths["sida7b_corrected_vs_mixed_gate_comparison"]), comparison)
+    _write_text(Path(paths["sida7b_corrected_diagnostic_report"]), _corrected_report(decision_findings, str(config.get("mode")), len(manifest), len(records), type_metrics, raw_audit, comparison))
     artifact = {
         **plan,
         "dry_run": False,
@@ -610,6 +800,8 @@ def run_snsaug_v2_sida7b_diagnostic_baseline(config: dict[str, Any], dry_run: bo
         "warning_count": len(warnings),
         "warnings": warnings,
         "decision": decision,
+        "decision_findings": decision_findings,
+        "raw_output_audit": raw_audit,
         "cached_sida_outputs_path": str(_real(config["cached_sida_outputs_path"])) if config.get("cached_sida_outputs_path") else None,
     }
     _write_json(Path(paths["artifact_manifest"]), artifact)
@@ -625,10 +817,13 @@ __all__ = [
     "SNSAugV2SIDA7BDiagnosticBaselineError",
     "build_balanced_subset",
     "compare_sida_to_mixed_gate",
+    "load_mixed_gate_metrics",
     "mask_valid_iou",
     "normalize_class",
     "parse_cached_sida_outputs",
     "parse_sida_text_output",
+    "parse_sida_text_output_detail",
+    "raw_output_audit",
     "run_snsaug_v2_sida7b_diagnostic_baseline",
     "validate_snsaug_v2_sida7b_diagnostic_baseline_config",
 ]
