@@ -1,0 +1,20 @@
+{
+  "schema_version": "1.0",
+  "config_kind": "approved_snsaug_v2_final_sida_addendum",
+  "execution_mode": "approved_local_snsaug_v2_final_sida_addendum",
+  "user_approval_text": "I_APPROVE_SNSAUG_V2_FINAL_SIDA_ADDENDUM",
+  "sida_output_root": "/home/rlatjswo/cvf_eval_outputs/snsaug_v2_0074_sida7b_diagnostic_baseline_YYYYMMDD_HHMMSS",
+  "mixed_gate_output_root": "/home/rlatjswo/cvf_eval_outputs/snsaug_v2_0072_deployable_policy_gate_report_YYYYMMDD_HHMMSS",
+  "approved_input_roots": [
+    "/home/rlatjswo/cvf_eval_outputs/snsaug_v2_0074_sida7b_diagnostic_baseline_YYYYMMDD_HHMMSS",
+    "/home/rlatjswo/cvf_eval_outputs/snsaug_v2_0072_deployable_policy_gate_report_YYYYMMDD_HHMMSS"
+  ],
+  "approved_output_roots": [
+    "/home/rlatjswo/cvf_eval_outputs"
+  ],
+  "output_root": "/home/rlatjswo/cvf_eval_outputs/snsaug_v2_0075_final_sida_addendum_YYYYMMDD_HHMMSS",
+  "no_training": true,
+  "no_finetune": true,
+  "no_network": true,
+  "no_download": true
+}

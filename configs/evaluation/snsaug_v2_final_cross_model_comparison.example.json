@@ -1,0 +1,22 @@
+{
+  "schema_version": "1.0",
+  "config_kind": "approved_snsaug_v2_final_cross_model_comparison",
+  "execution_mode": "approved_local_snsaug_v2_final_cross_model_comparison",
+  "user_approval_text": "I_APPROVE_SNSAUG_V2_FINAL_CROSS_MODEL_COMPARISON",
+  "unified_sida_gate_output_root": "/home/rlatjswo/cvf_eval_outputs/snsaug_v2_0076_unified_sida_gate_comparison_YYYYMMDD_HHMMSS",
+  "mixed_gate_output_root": "/home/rlatjswo/cvf_eval_outputs/snsaug_v2_0072_deployable_policy_gate_report_YYYYMMDD_HHMMSS",
+  "pre_sns_baseline_root": "",
+  "failed_single_model_finetune_root": "",
+  "approved_input_roots": [
+    "/home/rlatjswo/cvf_eval_outputs/snsaug_v2_0076_unified_sida_gate_comparison_YYYYMMDD_HHMMSS",
+    "/home/rlatjswo/cvf_eval_outputs/snsaug_v2_0072_deployable_policy_gate_report_YYYYMMDD_HHMMSS"
+  ],
+  "approved_output_roots": [
+    "/home/rlatjswo/cvf_eval_outputs"
+  ],
+  "output_root": "/home/rlatjswo/cvf_eval_outputs/snsaug_v2_0077_final_cross_model_comparison_YYYYMMDD_HHMMSS",
+  "no_training": true,
+  "no_finetune": true,
+  "no_network": true,
+  "no_download": true
+}
