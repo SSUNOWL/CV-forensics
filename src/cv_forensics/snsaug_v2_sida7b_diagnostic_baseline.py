@@ -36,6 +36,7 @@ GLOBAL_GEOMETRY_PROFILES = {
     "recompression_light",
 }
 SUPPORTED_PROFILES = tuple(sorted({"clean"} | LOCAL_OVERLAY_PROFILES | GLOBAL_GEOMETRY_PROFILES))
+STRICT_COMPARISON_PROFILES = tuple(sorted(LOCAL_OVERLAY_PROFILES | GLOBAL_GEOMETRY_PROFILES))
 
 
 class SNSAugV2SIDA7BDiagnosticBaselineError(ValueError):
@@ -532,16 +533,31 @@ def clean_to_sns_drops(metrics: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def load_mixed_gate_metrics(path: str | None) -> dict[str, Any]:
+def _mixed_gate_metrics_from_records(path: str | None) -> dict[str, Any]:
     if not path:
         return {}
+    rows = _load_jsonl(path)
+    out: dict[str, Any] = {}
+    for profile in sorted({str(row.get("profile") or "") for row in rows if row.get("profile")}):
+        selected = [row for row in rows if str(row.get("profile") or "") == profile]
+        tampered = [row for row in selected if normalize_class(row.get("content_label")) == "tampered"]
+        synthetic = [row for row in selected if normalize_class(row.get("content_label")) == "synthetic"]
+        real = [row for row in selected if normalize_class(row.get("content_label")) == "real"]
+        out[profile] = {
+            "row_count": len(selected),
+            "tampered_recall": (sum(1 for row in tampered if str(row.get("pred_class") or "") == "tampered" or row.get("pred_tampered") is True) / len(tampered)) if tampered else None,
+            "synthetic_recall": (sum(1 for row in synthetic if str(row.get("pred_class") or "") == "synthetic") / len(synthetic)) if synthetic else None,
+            "real_fpr": (sum(1 for row in real if str(row.get("pred_class") or "") != "real" or row.get("pred_tampered") is True) / len(real)) if real else None,
+            "tampered_valid_mean_iou": _mean([row.get("valid_iou") for row in tampered]),
+            "mean_p_tampered": _mean([row.get("p_tampered") for row in selected]),
+        }
+    return out
+
+
+def load_mixed_gate_metrics(path: str | None, records_path: str | None = None) -> dict[str, Any]:
+    if not path:
+        return _mixed_gate_metrics_from_records(records_path)
     payload = _load_json(path)
-    per_profile = payload.get("per_profile") if isinstance(payload.get("per_profile"), dict) else {}
-    if per_profile:
-        return per_profile
-    profiles = payload.get("profiles") if isinstance(payload.get("profiles"), dict) else {}
-    if profiles:
-        return profiles
     comparison = payload.get("comparison_against_fixed_original") if isinstance(payload.get("comparison_against_fixed_original"), dict) else {}
     out: dict[str, Any] = {}
     for profile, item in comparison.items():
@@ -550,7 +566,15 @@ def load_mixed_gate_metrics(path: str | None) -> dict[str, Any]:
         selected = item.get("selected")
         if isinstance(selected, dict):
             out[str(profile)] = selected
-    return out
+    if out:
+        return out
+    per_profile = payload.get("per_profile") if isinstance(payload.get("per_profile"), dict) else {}
+    if per_profile:
+        return per_profile
+    profiles = payload.get("profiles") if isinstance(payload.get("profiles"), dict) else {}
+    if profiles:
+        return profiles
+    return _mixed_gate_metrics_from_records(records_path)
 
 
 def _metric_delta(left: Any, right: Any) -> float | None:
@@ -567,7 +591,7 @@ def _metric_value(row: dict[str, Any], *names: str) -> Any:
 
 
 def compare_sida_to_mixed_gate(sida_metrics: dict[str, Any], mixed_gate_metrics: dict[str, Any]) -> dict[str, Any]:
-    profiles = sorted(set(sida_metrics) | set(mixed_gate_metrics))
+    profiles = sorted(profile for profile in STRICT_COMPARISON_PROFILES if profile in sida_metrics or profile in mixed_gate_metrics)
     out: dict[str, Any] = {}
     for profile in profiles:
         sida = sida_metrics.get(profile, {}) if isinstance(sida_metrics.get(profile), dict) else {}
@@ -598,7 +622,27 @@ def compare_sida_to_mixed_gate(sida_metrics: dict[str, Any], mixed_gate_metrics:
             "tampered_recall_delta_sida_minus_gate": _metric_delta(sida_tampered_recall, gate_tampered_recall),
             "valid_iou_delta_sida_minus_gate": _metric_delta(sida_valid_iou, gate_valid_iou),
         }
-    return {"marker": MARKER, "profiles": out, "missing_mixed_gate_profiles": [p for p in sida_metrics if p not in mixed_gate_metrics]}
+    clean_metrics = sida_metrics.get("clean", {}) if isinstance(sida_metrics.get("clean"), dict) else {}
+    clean_reference = {
+        "profile": "clean",
+        "reference_only": True,
+        "sida_metrics": clean_metrics,
+        "mixed_gate_available": "clean" in mixed_gate_metrics,
+        "reason": "SIDA subset includes clean reference rows; final mixed_feature_gate contains SNSAug perturbation profiles only.",
+    }
+    missing_strict = [profile for profile in STRICT_COMPARISON_PROFILES if profile not in mixed_gate_metrics]
+    missing_reference_only = ["clean"] if "clean" in sida_metrics and "clean" not in mixed_gate_metrics else []
+    return {
+        "marker": MARKER,
+        "strict_profile_set": list(STRICT_COMPARISON_PROFILES),
+        "profiles": out,
+        "clean_reference": clean_reference,
+        "reference_only_profiles": ["clean"] if "clean" in sida_metrics else [],
+        "missing_reference_only_profiles": missing_reference_only,
+        "missing_mixed_gate_profiles": missing_strict,
+        "strict_comparison_available": not missing_strict,
+        "clean_safe": True,
+    }
 
 
 def decide_sida(type_metrics: dict[str, Any], cached_available: bool) -> str:
@@ -633,7 +677,10 @@ def decide_sida_findings(type_metrics: dict[str, Any], comparison: dict[str, Any
     if any((item.get("mask_missing_rate") or 0.0) >= 1.0 for item in all_groups):
         findings.append("sida_localization_unavailable_mask_missing")
     missing = comparison.get("missing_mixed_gate_profiles", []) if isinstance(comparison, dict) else []
-    findings.append("sida_vs_mixed_gate_incomplete" if missing else "sida_vs_mixed_gate_available")
+    clean_missing = comparison.get("missing_reference_only_profiles", []) if isinstance(comparison, dict) else []
+    findings.append("sida_vs_mixed_gate_incomplete" if missing else "sida_vs_mixed_gate_strict_comparison_available")
+    if clean_missing == ["clean"]:
+        findings.append("clean_missing_only_expected_for_mixed_gate")
     return findings or ["sida_handles_both_types"]
 
 
@@ -651,6 +698,8 @@ def _paths(output_root: Path) -> dict[str, str]:
         "sida7b_raw_output_audit": str(output_root / "sida7b_raw_output_audit.json"),
         "sida7b_corrected_type_a_type_b_summary": str(output_root / "sida7b_corrected_type_a_type_b_summary.json"),
         "sida7b_corrected_vs_mixed_gate_comparison": str(output_root / "sida7b_corrected_vs_mixed_gate_comparison.json"),
+        "sida7b_clean_safe_vs_mixed_gate_comparison": str(output_root / "sida7b_clean_safe_vs_mixed_gate_comparison.json"),
+        "sida7b_clean_safe_vs_mixed_gate_comparison_report": str(output_root / "sida7b_clean_safe_vs_mixed_gate_comparison.md"),
         "sida7b_corrected_diagnostic_report": str(output_root / "sida7b_corrected_diagnostic_report.md"),
         "artifact_manifest": str(output_root / "artifact_manifest.json"),
     }
@@ -700,6 +749,31 @@ def _report(decision: str, mode: str, manifest_count: int, records_count: int, t
         for key in ("type_a_local_overlay", "type_b_global_geometry_degradation", "clean"):
             item = type_metrics.get(key, {})
             lines.append(f"| {key} | {item.get('accuracy')} | {item.get('tampered_recall')} | {item.get('tampered_valid_mean_iou')} | {item.get('parse_error_rate')} |")
+    return "\n".join(lines) + "\n"
+
+
+def _clean_safe_comparison_report(comparison: dict[str, Any]) -> str:
+    missing_strict = comparison.get("missing_mixed_gate_profiles", []) if isinstance(comparison, dict) else []
+    missing_reference = comparison.get("missing_reference_only_profiles", []) if isinstance(comparison, dict) else []
+    clean_reference = comparison.get("clean_reference", {}) if isinstance(comparison.get("clean_reference"), dict) else {}
+    lines = [
+        "# Clean-Safe SIDA vs Mixed Gate Comparison",
+        "",
+        MARKER,
+        "",
+        f"- Strict comparison available: `{not bool(missing_strict)}`",
+        f"- Missing strict Type A/B mixed-gate profiles: `{missing_strict}`",
+        f"- Missing reference-only profiles: `{missing_reference}`",
+        f"- Clean reference-only: `{clean_reference.get('reference_only', False)}`",
+        "",
+        "Strict comparison is limited to the 12 Type A/B SNSAug perturbation profiles. Clean rows are retained as SIDA reference context and are not fatal for mixed_feature_gate comparison availability.",
+        "",
+        "| Profile | SIDA Tampered Recall | Gate Tampered Recall | SIDA Valid IoU | Gate Valid IoU |",
+        "| --- | ---: | ---: | ---: | ---: |",
+    ]
+    for profile, row in sorted((comparison.get("profiles") or {}).items()):
+        if isinstance(row, dict):
+            lines.append(f"| {profile} | {row.get('sida_tampered_recall')} | {row.get('mixed_gate_tampered_recall')} | {row.get('sida_valid_iou')} | {row.get('mixed_gate_valid_iou')} |")
     return "\n".join(lines) + "\n"
 
 
@@ -777,7 +851,7 @@ def run_snsaug_v2_sida7b_diagnostic_baseline(config: dict[str, Any], dry_run: bo
         records = parse_cached_sida_outputs(cached_rows, manifest)
         per_profile = per_profile_metrics(records)
         type_metrics = type_summary(records)
-        comparison = compare_sida_to_mixed_gate(per_profile, load_mixed_gate_metrics(config.get("final_policy_gate_metrics_path")))
+        comparison = compare_sida_to_mixed_gate(per_profile, load_mixed_gate_metrics(config.get("final_policy_gate_metrics_path"), config.get("final_policy_gate_records_path")))
     decision = decide_sida(type_metrics, cached_available)
     decision_findings = decide_sida_findings(type_metrics, comparison, cached_available)
     _write_jsonl(Path(paths["sida7b_diagnostic_records"]), records)
@@ -788,6 +862,8 @@ def run_snsaug_v2_sida7b_diagnostic_baseline(config: dict[str, Any], dry_run: bo
     _write_json(Path(paths["sida7b_raw_output_audit"]), {"marker": MARKER, **raw_audit})
     _write_json(Path(paths["sida7b_corrected_type_a_type_b_summary"]), {"marker": MARKER, "summary": type_metrics, "decision_findings": decision_findings})
     _write_json(Path(paths["sida7b_corrected_vs_mixed_gate_comparison"]), comparison)
+    _write_json(Path(paths["sida7b_clean_safe_vs_mixed_gate_comparison"]), comparison)
+    _write_text(Path(paths["sida7b_clean_safe_vs_mixed_gate_comparison_report"]), _clean_safe_comparison_report(comparison))
     _write_text(Path(paths["sida7b_corrected_diagnostic_report"]), _corrected_report(decision_findings, str(config.get("mode")), len(manifest), len(records), type_metrics, raw_audit, comparison))
     artifact = {
         **plan,

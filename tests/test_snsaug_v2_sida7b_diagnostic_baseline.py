@@ -22,6 +22,7 @@ from cv_forensics.snsaug_v2_sida7b_diagnostic_baseline import (  # noqa: E402
     MARKER,
     build_balanced_subset,
     compare_sida_to_mixed_gate,
+    decide_sida_findings,
     export_subset_rows,
     load_mixed_gate_metrics,
     mask_valid_iou,
@@ -49,6 +50,26 @@ def assert_equal(actual, expected, message: str) -> None:
 def temp_root(prefix: str) -> Path:
     TMP_PARENT.mkdir(parents=True, exist_ok=True)
     return Path(tempfile.mkdtemp(prefix=prefix, dir=str(TMP_PARENT)))
+
+
+STRICT_PROFILES = (
+    "canvas_9x16_only",
+    "combined_sns_realistic",
+    "instagram_story_like",
+    "news_meme_overlay",
+    "platform_ui_same_size",
+    "recompression_light",
+    "resize_crop_pad",
+    "resize_jpeg",
+    "screenshot_recapture_light",
+    "tiktok_like",
+    "youtube_shorts_like",
+    "zoom_crop",
+)
+
+
+def strict_metrics(value: float = 0.7) -> dict[str, dict[str, float]]:
+    return {profile: {"tampered_recall": value, "synthetic_recall": value, "real_fpr": 0.1, "tampered_valid_mean_iou": value} for profile in STRICT_PROFILES}
 
 
 def _mask(size: tuple[int, int], box: tuple[int, int, int, int]) -> Image.Image:
@@ -175,6 +196,42 @@ def test_mask_iou_and_mixed_gate_comparison_missing_profiles() -> None:
     assert_true("zoom_crop" in comparison["missing_mixed_gate_profiles"], "missing mixed profile tracked")
 
 
+def test_clean_missing_does_not_fail_strict_comparison() -> None:
+    sida = strict_metrics(0.5)
+    sida["clean"] = {"tampered_recall": 0.9}
+    comparison = compare_sida_to_mixed_gate(sida, strict_metrics(0.7))
+    assert_equal(comparison["missing_mixed_gate_profiles"], [], "clean excluded from strict missing profiles")
+    assert_equal(comparison["missing_reference_only_profiles"], ["clean"], "clean reported as reference-only missing")
+    findings = decide_sida_findings(
+        {
+            "type_a_local_overlay": {"row_count": 1, "tampered_recall": 0.5, "synthetic_recall": 0.0, "mask_missing_rate": 0.0},
+            "type_b_global_geometry_degradation": {"row_count": 1, "tampered_recall": 0.5, "synthetic_recall": 0.0, "mask_missing_rate": 0.0},
+        },
+        comparison,
+        cached_available=True,
+    )
+    assert_true("sida_vs_mixed_gate_strict_comparison_available" in findings, "strict comparison available with only clean missing")
+    assert_true("clean_missing_only_expected_for_mixed_gate" in findings, "clean-only missing finding present")
+
+
+def test_type_a_b_missing_still_fails_strict_comparison() -> None:
+    sida = strict_metrics(0.5)
+    sida["clean"] = {"tampered_recall": 0.9}
+    gate = strict_metrics(0.7)
+    gate.pop("news_meme_overlay")
+    comparison = compare_sida_to_mixed_gate(sida, gate)
+    assert_true("news_meme_overlay" in comparison["missing_mixed_gate_profiles"], "strict Type A missing profile fails")
+    findings = decide_sida_findings(
+        {
+            "type_a_local_overlay": {"row_count": 1, "tampered_recall": 0.5, "synthetic_recall": 0.0, "mask_missing_rate": 0.0},
+            "type_b_global_geometry_degradation": {"row_count": 1, "tampered_recall": 0.5, "synthetic_recall": 0.0, "mask_missing_rate": 0.0},
+        },
+        comparison,
+        cached_available=True,
+    )
+    assert_true("sida_vs_mixed_gate_incomplete" in findings, "strict missing profile remains incomplete")
+
+
 def test_mixed_gate_metrics_load_selected_schema_by_profile() -> None:
     root = temp_root("cvf_0074_gate_")
     metrics = root / "final_policy_gate_metrics.json"
@@ -198,8 +255,33 @@ def test_mixed_gate_metrics_load_selected_schema_by_profile() -> None:
     loaded = load_mixed_gate_metrics(str(metrics))
     assert_equal(loaded["zoom_crop"]["tampered_recall"], 0.7, "selected mixed gate profile loaded")
     comparison = compare_sida_to_mixed_gate({"zoom_crop": {"tampered_recall": 0.5, "synthetic_recall": 0.1, "real_fpr": 0.3, "tampered_valid_mean_iou": 0.2}}, loaded)
-    assert_equal(comparison["missing_mixed_gate_profiles"], [], "mixed gate profile available")
+    assert_true("zoom_crop" not in comparison["missing_mixed_gate_profiles"], "mixed gate profile available")
     assert_equal(comparison["profiles"]["zoom_crop"]["delta_sida_minus_mixed_gate"]["synthetic_recall"], -0.8, "synthetic delta")
+
+
+def test_mixed_gate_metrics_per_profile_and_records_fallback() -> None:
+    root = temp_root("cvf_0074_gate_fallback_")
+    metrics = root / "final_policy_gate_metrics.json"
+    metrics.write_text(
+        json.dumps({"per_profile": {"zoom_crop": {"tampered_recall": 0.6, "tampered_valid_mean_iou": 0.4}}}),
+        encoding="utf-8",
+    )
+    loaded = load_mixed_gate_metrics(str(metrics))
+    assert_equal(loaded["zoom_crop"]["tampered_recall"], 0.6, "per_profile fallback loaded")
+    empty_metrics = root / "empty_metrics.json"
+    records = root / "final_policy_gate_records.jsonl"
+    empty_metrics.write_text(json.dumps({"marker": "x"}), encoding="utf-8")
+    rows = [
+        {"profile": "zoom_crop", "content_label": "tampered", "pred_class": "tampered", "valid_iou": 0.8, "p_tampered": 0.9},
+        {"profile": "zoom_crop", "content_label": "tampered", "pred_class": "real", "valid_iou": 0.4, "p_tampered": 0.2},
+        {"profile": "zoom_crop", "content_label": "real", "pred_class": "tampered", "p_tampered": 0.7},
+    ]
+    with open(records, "w", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(json.dumps(row) + "\n")
+    fallback = load_mixed_gate_metrics(str(empty_metrics), str(records))
+    assert_equal(fallback["zoom_crop"]["tampered_recall"], 0.5, "records fallback tampered recall")
+    assert_equal(fallback["zoom_crop"]["tampered_valid_mean_iou"], 0.6000000000000001, "records fallback iou mean")
 
 
 def test_export_only_run_writes_artifact_and_forbids_conclusion() -> None:
@@ -234,6 +316,10 @@ def test_cached_run_writes_records() -> None:
     assert_equal(len(records), 2, "cached records written")
     corrected = Path(summary["output_paths"]["sida7b_corrected_diagnostic_report"]).read_text(encoding="utf-8")
     assert_true("does not claim localization failure" in corrected, "corrected report avoids localization failure claim")
+    clean_safe = json.loads(Path(summary["output_paths"]["sida7b_clean_safe_vs_mixed_gate_comparison"]).read_text(encoding="utf-8"))
+    assert_true(clean_safe["clean_safe"] is True, "clean-safe comparison json written")
+    clean_safe_report = Path(summary["output_paths"]["sida7b_clean_safe_vs_mixed_gate_comparison_report"]).read_text(encoding="utf-8")
+    assert_true("Clean-Safe SIDA vs Mixed Gate Comparison" in clean_safe_report, "clean-safe comparison markdown written")
 
 
 def test_docs_marker_present() -> None:
@@ -247,7 +333,10 @@ def main() -> int:
         test_export_manifest_balanced_and_prompt_contains_tags,
         test_class_parser_and_cached_missing_masks,
         test_mask_iou_and_mixed_gate_comparison_missing_profiles,
+        test_clean_missing_does_not_fail_strict_comparison,
+        test_type_a_b_missing_still_fails_strict_comparison,
         test_mixed_gate_metrics_load_selected_schema_by_profile,
+        test_mixed_gate_metrics_per_profile_and_records_fallback,
         test_export_only_run_writes_artifact_and_forbids_conclusion,
         test_cached_run_writes_records,
         test_docs_marker_present,
