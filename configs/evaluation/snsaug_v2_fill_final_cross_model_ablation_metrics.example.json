@@ -1,0 +1,21 @@
+{
+  "schema_version": "1.0",
+  "config_kind": "approved_snsaug_v2_fill_final_cross_model_ablation_metrics",
+  "execution_mode": "approved_local_snsaug_v2_fill_final_cross_model_ablation_metrics",
+  "user_approval_text": "I_APPROVE_SNSAUG_V2_FILL_FINAL_CROSS_MODEL_ABLATION_METRICS",
+  "comparison_search_root": "/home/rlatjswo/cvf_eval_outputs",
+  "decision_report_search_root": "/home/rlatjswo/cvf_eval_outputs",
+  "comparison_output_root": "",
+  "decision_report_path": "",
+  "approved_input_roots": [
+    "/home/rlatjswo/cvf_eval_outputs"
+  ],
+  "approved_output_roots": [
+    "/home/rlatjswo/cvf_eval_outputs"
+  ],
+  "output_root": "/home/rlatjswo/cvf_eval_outputs/snsaug_v2_0077a_fill_final_cross_model_ablation_metrics_YYYYMMDD_HHMMSS",
+  "no_training": true,
+  "no_finetune": true,
+  "no_network": true,
+  "no_download": true
+}
