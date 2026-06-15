@@ -1,0 +1,22 @@
+{
+  "schema_version": "1.0",
+  "config_kind": "approved_snsaug_v2_sida_clean_vs_snsaug",
+  "execution_mode": "approved_local_snsaug_v2_sida_clean_vs_snsaug",
+  "user_approval_text": "I_APPROVE_SNSAUG_V2_SIDA_CLEAN_VS_SNSAUG",
+  "mode": "export_clean_counterpart_mode",
+  "snsaug_sida_export_manifest_path": "/home/rlatjswo/cvf_eval_outputs/snsaug_v2_0074_sida7b_diagnostic_baseline_YYYYMMDD_HHMMSS/sida_eval_subset_manifest.jsonl",
+  "meta_jsonl_path": "/home/rlatjswo/cvf_eval_outputs/snsaug_v2_0058c_fixed_pairs_YYYYMMDD_HHMMSS/meta.jsonl",
+  "cached_clean_sida_outputs_path": "",
+  "cached_snsaug_sida_outputs_path": "",
+  "approved_input_roots": [
+    "/home/rlatjswo/cvf_eval_outputs"
+  ],
+  "approved_output_roots": [
+    "/home/rlatjswo/cvf_eval_outputs"
+  ],
+  "output_root": "/home/rlatjswo/cvf_eval_outputs/snsaug_v2_0079_sida_clean_vs_snsaug_YYYYMMDD_HHMMSS",
+  "no_training": true,
+  "no_finetune": true,
+  "no_network": true,
+  "no_download": true
+}

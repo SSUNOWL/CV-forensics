@@ -15,6 +15,23 @@ Evaluate whether SIDA-7B performance changes from clean/basic images to SNSAug-t
 
 This is an evaluation/export/cached-analysis task. Do not train.
 
+## Role
+
+Codex is the implementation worker and reviewer because Claude Code is unavailable.
+
+## Files Codex May Read
+
+- `AGENTS.md`
+- `CLAUDE.md`
+- `docs/project_brief.md`
+- `docs/project_contract.md`
+- `configs/project_contract.json`
+- `docs/agent_workflow.md`
+- `tasks/0079-sida-clean-vs-snsaug-paired-diagnostic.md`
+- `src/cv_forensics/snsaug_v2_sida7b_diagnostic_baseline.py`
+- `tests/test_snsaug_v2_sida7b_diagnostic_baseline.py`
+- `configs/evaluation/snsaug_v2_sida7b_diagnostic_baseline.example.json`
+
 ## Files Codex May Modify
 
 - `tasks/0079-sida-clean-vs-snsaug-paired-diagnostic.md`
@@ -24,6 +41,25 @@ This is an evaluation/export/cached-analysis task. Do not train.
 - `configs/evaluation/snsaug_v2_sida_clean_vs_snsaug.example.json`
 - `tests/test_snsaug_v2_sida_clean_vs_snsaug.py`
 - `docs/snsaug_v2_sida_clean_vs_snsaug.md`
+
+## Forbidden Actions
+
+- Do not rerun SIDA inside this repository.
+- Do not train or fine-tune models.
+- Do not download datasets, packages, or checkpoints.
+- Do not use the network.
+- Do not access `.env`, `.env.*`, `secrets/`, `data/`, `datasets/`, repository `outputs/`, or `checkpoints/`.
+- Do not run `git push`, `git pull`, or `git fetch`.
+- Do not install packages.
+- Do not create large files.
+
+## Important Project Facts
+
+- Synthetic samples remain part of 3-way classification metrics.
+- Synthetic samples must be excluded from tampered mask IoU.
+- Synthetic samples should report synthetic recall and synthetic mask false-positive rate.
+- Tampered samples should report clean IoU, SNS IoU, delta IoU, and mask missing.
+- Type A local overlay and Type B global geometry/degradation must be reported separately.
 
 ## Files Claude May Modify
 
@@ -151,11 +187,40 @@ Report must distinguish:
 
 ## Validation Commands
 
-- python3 scripts/agent/validate_snsaug_v2_sida_clean_vs_snsaug_config.py configs/evaluation/snsaug_v2_sida_clean_vs_snsaug.example.json
-- CUDA_VISIBLE_DEVICES='' python3 tests/test_snsaug_v2_sida_clean_vs_snsaug.py
-- python3 scripts/evaluation/run_snsaug_v2_sida_clean_vs_snsaug.py --help
-- grep -q SNSAUG_V2_SIDA_CLEAN_VS_SNSAUG_OK docs/snsaug_v2_sida_clean_vs_snsaug.md
-- python3 scripts/agent/check_agent_changes.py tasks/0079-sida-clean-vs-snsaug-paired-diagnostic.md
+```bash
+python3 scripts/agent/validate_snsaug_v2_sida_clean_vs_snsaug_config.py configs/evaluation/snsaug_v2_sida_clean_vs_snsaug.example.json
+```
+
+```bash
+python3 tests/test_snsaug_v2_sida_clean_vs_snsaug.py
+```
+
+```bash
+python3 scripts/evaluation/run_snsaug_v2_sida_clean_vs_snsaug.py --help
+```
+
+```bash
+grep -q SNSAUG_V2_SIDA_CLEAN_VS_SNSAUG_OK docs/snsaug_v2_sida_clean_vs_snsaug.md
+```
+
+```bash
+python3 scripts/agent/check_agent_changes.py tasks/0079-sida-clean-vs-snsaug-paired-diagnostic.md
+```
+
+## Acceptance Criteria
+
+- Example config validates.
+- Export mode writes clean counterpart manifest, prompt list, and external SIDA template.
+- Cached eval mode joins clean and SNSAug cached rows by base sample metadata.
+- Synthetic samples contribute to 3-way classification and synthetic mask false-positive metrics, but not tampered IoU.
+- Tampered samples include clean/SNS IoU deltas and mask-missing deltas.
+- Type A, Type B, strict Type A+B, and clean-reference summaries are written.
+- Dry-run writes no output records.
+- Changed files are limited to the allowed list.
+
+## Stop Condition
+
+Stop after validation and strict Codex review. Do not commit automatically.
 
 ## Marker
 
